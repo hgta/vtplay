@@ -18,17 +18,27 @@ void FrameQueue::dropOldest(bool wantVideo) {
     }
 }
 
-// 视频帧：允许丢弃（丢帧优于延迟），只限制视频节点数量。
+// 视频帧：队列满时阻塞等待消费者（背压），而不是丢最旧。
+//
+// 为什么不能"满则丢最旧"：解码速度通常快于显示速度（例如 4K 软解 68fps >
+// 60fps 显示），丢最旧会把"该显示的帧"持续丢掉，队列里只剩 PTS 远大于
+// 当前时钟的"未来帧"，而渲染是按媒体时钟取帧（PTS <= 时钟）→ 永远取不到
+// → 画面冻结（音频链路独立，故表现为"画面卡住、声音正常"）。
+//
+// 超时兜底：暂停或窗口不可见时消费者会停摆，不能无限阻塞，否则会经
+// 包队列反向卡死 demux 线程。超时后丢弃最旧帧，保证管线始终可推进。
 void FrameQueue::pushVideo(VideoFrame f) {
     Node n;
     n.pts = f.ptsSec;
     n.isVideo = true;
     n.vf = std::move(f);
     {
-        std::lock_guard<std::mutex> lk(mu_);
+        std::unique_lock<std::mutex> lk(mu_);
+        cv_.wait_for(lk, std::chrono::milliseconds(100),
+                     [&]{ return aborted_ || videoCountLocked() < videoCapacity_; });
         if (aborted_) return;
+        if (videoCountLocked() >= videoCapacity_) dropOldest(true);
         q_.push_back(std::move(n));
-        while (videoCountLocked() > videoCapacity_) dropOldest(true);
     }
     cv_.notify_all();
 }

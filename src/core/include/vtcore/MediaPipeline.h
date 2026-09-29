@@ -126,12 +126,16 @@ private:
     class Demuxer* demuxer_ = nullptr;
 
     // demux / decode 队列
-    // 包队列给足缓冲：高码率 4K 下解码吞吐波动大，过小会让 demux 频繁阻塞。
-    PacketQueue videoPackets_{128};
-    PacketQueue audioPackets_{128};
-    // 帧队列：视频容量 = 24/2 = 12 帧（按显示尺寸解码后每帧约 2-3MB）。
-    // 容量过小会让解码器 drain 出的尾部帧被大量丢弃，表现为结尾几帧闪失。
-    // 音频容量单独放大到 ~1 秒（48 帧 × 21ms），避免音频欠载造成断音。
+    // 包队列给足缓冲。demux 是单线程顺序读取，任一队列填满都会阻塞整个
+    // 读取循环（进而让另一条流断供）。4K60 下视频包约 110KB/包，
+    // 且音频消费速度恒定为实时，所以两侧都要留足余量：
+    //   视频包 256 × ~110KB ≈ 28MB（约 4 秒）
+    //   音频包 512 × ~5KB   ≈ 2.5MB（约 12 秒）
+    PacketQueue videoPackets_{256};
+    PacketQueue audioPackets_{512};
+    // 帧队列：视频容量 = 24/2 = 12 帧（按显示尺寸解码后每帧约 2-3MB），
+    // 队列满时阻塞解码器而非丢帧（见 FrameQueue::pushVideo 说明）。
+    // 音频容量 ~2 秒（96 帧 × 21ms），避免音频欠载造成断音。
     FrameQueue  frames_{24};
 
     // 线程

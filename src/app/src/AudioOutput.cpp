@@ -11,13 +11,20 @@
 #include <QDebug>
 #include <algorithm>
 #include <cstring>
+#include <thread>
 
 namespace vtapp {
 
 qint64 AudioOutput::PcmDevice::readData(char* data, qint64 maxlen) {
     if (!out->pipeline_) return 0;
-    // 未打开媒体：直接返回，不阻塞音频设备线程。
-    if (out->pipeline_->status() == vtcore::PlayerStatus::Idle) return 0;
+
+    // 仅在播放中消费音频：暂停/未打开/已结束时静音（否则暂停后声音仍在继续）。
+    // 短暂让出 CPU，避免拉模式下的忙转。
+    const auto st = out->pipeline_->status();
+    if (st != vtcore::PlayerStatus::Playing) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        return 0;
+    }
 
     qint64 produced = 0;
     while (produced < maxlen) {

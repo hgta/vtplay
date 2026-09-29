@@ -3,6 +3,7 @@
 #include "AudioFrame.h"
 #include "VideoFrame.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -68,8 +69,8 @@ private:
     /// 视频节点上限：超出丢最旧视频帧（丢帧优于延迟，4K 下也要控内存）。
     size_t videoCapacity_;
     /// 音频节点上限：超出阻塞生产者（音频绝不可丢，否则破音）。
-    /// 约 1 秒缓冲（48 帧 × 21ms）：太小会在解码抖动时造成欠载断音。
-    size_t audioCapacity_ = 48;
+    /// 约 2 秒缓冲（96 帧 × 21ms）：太小会在解码抖动时造成欠载断音。
+    size_t audioCapacity_ = 96;
     bool aborted_ = false;
 };
 
