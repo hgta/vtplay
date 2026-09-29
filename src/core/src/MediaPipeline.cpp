@@ -118,8 +118,8 @@ void MediaPipeline::open(const std::string& url) {
     running_.store(true);
     auto* demuxer = new Demuxer(fmt_, bestV, bestA, videoPackets_, audioPackets_);
     demuxer_ = demuxer;
-    auto* vDecoder = vdec_ ? new Decoder(Decoder::Kind::Video, vdec_, vst_, videoPackets_, frames_, targetW_, targetH_) : nullptr;
-    auto* aDecoder = adec_ ? new Decoder(Decoder::Kind::Audio, adec_, ast_, audioPackets_, frames_, targetW_, targetH_) : nullptr;
+    auto* vDecoder = vdec_ ? new Decoder(Decoder::Kind::Video, vdec_, vst_, videoPackets_, frames_, targetW_, targetH_, audioRate_, audioChannels_) : nullptr;
+    auto* aDecoder = adec_ ? new Decoder(Decoder::Kind::Audio, adec_, ast_, audioPackets_, frames_, targetW_, targetH_, audioRate_, audioChannels_) : nullptr;
 
     demuxTh_ = std::thread([this, demuxer]() {
         demuxer->run();

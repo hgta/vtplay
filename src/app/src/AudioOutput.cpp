@@ -5,11 +5,14 @@
 #include "Clock.h"
 #include "PlayerState.h"
 
+#include <QAudioDevice>
 #include <QAudioSink>
 #include <QAudioFormat>
 #include <QMediaDevices>
+#include <QTimer>
 #include <QDebug>
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 namespace vtapp {
@@ -76,30 +79,102 @@ qint64 AudioOutput::PcmDevice::readData(char* data, qint64 maxlen) {
     if (produced < maxlen) {
         std::memset(data + produced, 0, static_cast<size_t>(maxlen - produced));
     }
+
+    out->dbgCalls_++;
+    out->dbgBytes_ += produced;
+    if (produced == 0) out->dbgEmpty_++;
     return maxlen;
 }
 
 AudioOutput::AudioOutput(QObject* parent) : QObject(parent) {
+    // ---- 音频格式协商 ----
+    // 默认请求 S16 / 立体声 / 48kHz；若默认设备不支持（例如只支持 44.1kHz
+    // 的设备），回退到设备首选采样率/声道，并让解码器按该格式重采样。
+    // 否则 QAudioSink 可能拒绝启动（无声）。
+    const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
 
     QAudioFormat fmt;
     fmt.setSampleRate(48000);
     fmt.setChannelCount(2);
     fmt.setSampleFormat(QAudioFormat::Int16);
+
+    if (dev.isNull()) {
+        std::fprintf(stderr, "[audio] 警告：系统没有可用的音频输出设备\n");
+    } else if (!dev.isFormatSupported(fmt)) {
+        const QAudioFormat pref = dev.preferredFormat();
+        std::fprintf(stderr,
+            "[audio] 48kHz/2ch/S16 不被设备支持，改用首选格式 %dHz/%dch\n",
+            pref.sampleRate(), pref.channelCount());
+        if (pref.sampleRate()   > 0) fmt.setSampleRate(pref.sampleRate());
+        if (pref.channelCount() > 0) fmt.setChannelCount(pref.channelCount());
+    }
+    rate_     = fmt.sampleRate()   > 0 ? fmt.sampleRate()   : 48000;
+    channels_ = fmt.channelCount() > 0 ? fmt.channelCount() : 2;
+    fmt.setSampleFormat(QAudioFormat::Int16);   // 解码链路统一输出 S16
+
+    if (!dev.isNull()) {
+        std::fprintf(stderr, "[audio] device='%s' rate=%d ch=%d supported=%d\n",
+                     dev.description().toUtf8().constData(),
+                     rate_, channels_, (int)dev.isFormatSupported(fmt));
+        std::fflush(stderr);
+    }
+
     device_.reset(new PcmDevice(this));
 
     auto* sink = new QAudioSink(fmt, this);
     sink_.reset(sink);
     sink_->setVolume(static_cast<qreal>(volume_));
-    // 拉模式：QAudioSink 从 PcmDevice 拉取 PCM（设备格式固定为 48k/2ch/S16，
-    // 与解码器 swr 输出一致）。
+
+    // 状态变化日志：便于定位"无声"（IdleState=3 / StoppedState=2 表示设备未在播放）
+    connect(sink, &QAudioSink::stateChanged, this, [](QAudio::State s) {
+        std::fprintf(stderr, "[audio] state -> %d\n", static_cast<int>(s));
+        std::fflush(stderr);
+    });
+
+    // 拉模式：QAudioSink 从 PcmDevice 拉取 PCM
     sink_->start(device_.data());
+    std::fprintf(stderr, "[audio] sink started: state=%d error=%d\n",
+                 static_cast<int>(sink_->state()), static_cast<int>(sink_->error()));
+    std::fflush(stderr);
+
+    // 看门狗：若设备意外停摆（StoppedState），自动重启，避免"永久无声"
+    auto* watchdog = new QTimer(this);
+    connect(watchdog, &QTimer::timeout, this, [this]() {
+        if (!sink_) return;
+        if (sink_->state() == QAudio::StoppedState) {
+            std::fprintf(stderr, "[audio] sink stopped (error=%d) -> restarting\n",
+                         static_cast<int>(sink_->error()));
+            std::fflush(stderr);
+            sink_->start(device_.data());
+        }
+    });
+    watchdog->start(1000);
+
+    // 播放期统计（前 15 秒，每秒一行）：用于确认音频数据是否真的在送往设备。
+    // bytes 持续增长 = 正常；bytes 不涨且 empty 增长 = 解码侧没数据（画面/声音不同步）。
+    auto* stats = new QTimer(this);
+    connect(stats, &QTimer::timeout, this, [this, stats]() {
+        if (++statTick_ > 15) { stats->stop(); return; }
+        if (!pipeline_) return;
+        std::fprintf(stderr,
+            "[audio] t=%2ds status=%-7s calls=%lld bytes=%lld empty=%lld sinkState=%d\n",
+            statTick_, vtcore::toString(pipeline_->status()),
+            dbgCalls_, dbgBytes_, dbgEmpty_,
+            static_cast<int>(sink_ ? sink_->state() : -1));
+        std::fflush(stderr);
+    });
+    stats->start(1000);
 }
 
 AudioOutput::~AudioOutput() {
     if (sink_) sink_->stop();
 }
 
-void AudioOutput::attach(vtcore::MediaPipeline* p) { pipeline_ = p; }
+void AudioOutput::attach(vtcore::MediaPipeline* p) {
+    pipeline_ = p;
+    // 把协商后的音频格式告知解码器（决定 libswresample 的重采样目标）
+    if (pipeline_) pipeline_->setAudioFormat(rate_, channels_);
+}
 
 void AudioOutput::setVolume(double v) {
     volume_ = v;

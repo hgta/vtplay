@@ -16,9 +16,11 @@ namespace vtcore {
 
 Decoder::Decoder(Kind kind, AVCodecContext* ctx, AVStream* stream,
                  PacketQueue& in, FrameQueue& out,
-                 const std::atomic<int>& targetW, const std::atomic<int>& targetH)
+                 const std::atomic<int>& targetW, const std::atomic<int>& targetH,
+                 const std::atomic<int>& audioRate, const std::atomic<int>& audioChannels)
     : kind_(kind), ctx_(ctx), stream_(stream), in_(in), out_(out),
-      targetW_(targetW), targetH_(targetH) {}
+      targetW_(targetW), targetH_(targetH),
+      audioRate_(audioRate), audioChannels_(audioChannels) {}
 
 Decoder::~Decoder() {
     if (sws_) sws_freeContext(sws_);
@@ -154,8 +156,17 @@ void Decoder::runAudio() {
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
             if (ret < 0) break;
 
-            if (!swr_) {
-                AVChannelLayout outLayout = AV_CHANNEL_LAYOUT_STEREO;
+            // 目标格式取自设备协商结果（默认 S16/立体声/48kHz）。
+            // 设备不支持默认格式时由输出层改写，这里据此重建 swr。
+            const int wantRate = audioRate_.load();
+            const int wantCh   = audioChannels_.load();
+            if (!swr_ || wantRate != outSampleRate_ || wantCh != outChannels_) {
+                if (swr_) { swr_free(&swr_); swr_ = nullptr; }
+                outSampleRate_ = wantRate;
+                outChannels_   = wantCh;
+
+                AVChannelLayout outLayout;
+                av_channel_layout_default(&outLayout, outChannels_);
                 AVChannelLayout inLayout;
                 av_channel_layout_default(&inLayout, frame->ch_layout.nb_channels);
                 int rc = swr_alloc_set_opts2(&swr_,

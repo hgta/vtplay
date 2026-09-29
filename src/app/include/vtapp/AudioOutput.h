@@ -54,6 +54,14 @@ private:
     bool muted_ = false;
     /// 连续多少次 readData 没取到音频（用于判定播放结束）。
     int emptyStreak_ = 0;
+    /// 与设备协商后的输出格式（告知解码器用于重采样）。
+    int rate_ = 48000;
+    int channels_ = 2;
+    /// 播放期统计（诊断用，前 15 秒每秒输出一行）
+    qint64 dbgCalls_ = 0;
+    qint64 dbgBytes_ = 0;
+    qint64 dbgEmpty_ = 0;
+    int    statTick_ = 0;
 };
 
 } // namespace vtapp

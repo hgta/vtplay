@@ -4,6 +4,7 @@ REM  VTPlay launcher (development)
 REM  MinGW runtime dir: default D:\dev\msys64\mingw64\bin
 REM  Override with env vars VTPLAY_MINGW_BIN / VTPLAY_EXE
 REM ============================================================
+chcp 65001 >nul 2>&1
 setlocal
 if "%VTPLAY_MINGW_BIN%"=="" set "VTPLAY_MINGW_BIN=D:\dev\msys64\mingw64\bin"
 if "%VTPLAY_EXE%"=="" set "VTPLAY_EXE=%~dp0build\src\app\vtplay.exe"

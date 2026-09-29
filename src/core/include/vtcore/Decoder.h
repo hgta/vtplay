@@ -25,7 +25,8 @@ public:
 
     Decoder(Kind kind, AVCodecContext* ctx, AVStream* stream,
             PacketQueue& in, FrameQueue& out,
-            const std::atomic<int>& targetW, const std::atomic<int>& targetH);
+            const std::atomic<int>& targetW, const std::atomic<int>& targetH,
+            const std::atomic<int>& audioRate, const std::atomic<int>& audioChannels);
     ~Decoder();
 
     Decoder(const Decoder&) = delete;
@@ -50,6 +51,8 @@ private:
     FrameQueue&  out_;
     const std::atomic<int>& targetW_;  // 输出尺寸上限（0=源尺寸）
     const std::atomic<int>& targetH_;
+    const std::atomic<int>& audioRate_;      // 重采样目标采样率（设备格式）
+    const std::atomic<int>& audioChannels_;  // 重采样目标声道数
     SwsContext* sws_ = nullptr;       // video: YUV->RGBA（按目标尺寸缩放）
     SwrContext* swr_ = nullptr;       // audio: ->S16/2ch/48k
     AVPixelFormat swsDst_ = AV_PIX_FMT_RGBA;

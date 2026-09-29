@@ -65,6 +65,13 @@ public:
     /// 返回 PTS <= ptsSec 中最早的一帧并移除；无到点帧时返回 nullopt。
     std::optional<VideoFrame> takeVideoUpTo(double ptsSec, bool allowAhead = false);
 
+    /// 设置音频输出格式（需与音频设备实际支持的格式一致）。
+    /// 默认 S16 / 立体声 / 48kHz；设备不支持时由输出层协商后写入。
+    void setAudioFormat(int sampleRate, int channels) {
+        if (sampleRate > 0) audioRate_.store(sampleRate);
+        if (channels   > 0) audioChannels_.store(channels);
+    }
+
     /// 设置视频解码输出尺寸上限（0 表示按源尺寸输出）。
     /// UI 层把渲染区尺寸告知管线，解码时就缩放到可用尺寸，
     /// 避免 4K 源在高分屏上做无谓的大帧转换/上传（性能关键路径）。
@@ -165,6 +172,9 @@ private:
     /// 视频解码输出尺寸上限（0=按源尺寸）。解码线程读取，UI 线程写入。
     std::atomic<int> targetW_{0};
     std::atomic<int> targetH_{0};
+    /// 音频输出格式（决定 libswresample 的重采样目标）。
+    std::atomic<int> audioRate_{48000};
+    std::atomic<int> audioChannels_{2};
 };
 
 } // namespace vtcore
