@@ -78,6 +78,9 @@ void PlayerController::open(const QString& path) {
         emit statusChanged();
         emit durationChanged();
         emit mediaInfoChanged();
+        // 打开成功后立即开始播放：符合播放器惯例。
+        // 否则界面停在首帧（看起来"画面正常"），用户会以为"没声音/没反应"。
+        this->play();
     } catch (const std::exception& e) {
         errorString_ = QString::fromUtf8(e.what());
         emit errorChanged();

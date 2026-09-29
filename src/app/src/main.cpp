@@ -43,10 +43,9 @@ int main(int argc, char* argv[]) {
     engine.loadFromModule("VTPlay", "Main");
     if (engine.rootObjects().isEmpty()) return -1;
 
-    // 命令行传入媒体文件则直接打开并播放
+    // 命令行传入媒体文件则直接打开（open 内部会自动开始播放）
     if (argc > 1 && argv[1] && *argv[1]) {
         controller.openUrl(QUrl::fromUserInput(QString::fromLocal8Bit(argv[1])));
-        controller.play();
     }
 
     return app.exec();
