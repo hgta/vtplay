@@ -1,0 +1,33 @@
+# Build outputs
+build/
+out/
+cmake-build-*/
+*.o
+*.obj
+*.exe
+*.app
+*.dll
+*.so
+*.dylib
+
+# IDE
+.vs/
+.vscode/
+.cache/
+.clangd/
+CMakeUserPresets.json
+
+# Qt
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.qmlc
+*.jsc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local
+*.user

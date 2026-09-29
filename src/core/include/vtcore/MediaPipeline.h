@@ -1,0 +1,166 @@
+#pragma once
+
+#include "AudioFrameObserver.h"
+#include "Clock.h"
+#include "FrameQueue.h"
+#include "MediaInfo.h"
+#include "PacketQueue.h"
+#include "PlayerState.h"
+
+#include <atomic>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <thread>
+
+struct AVFormatContext;
+struct AVCodecContext;
+struct AVStream;
+#include "Demuxer.h"
+
+namespace vtcore {
+
+class Demuxer;
+class Decoder;
+
+/// 自研媒体管线。不依赖 Qt UI，可单独 headless 自测。
+class MediaPipeline {
+public:
+    MediaPipeline();
+    ~MediaPipeline();
+
+    MediaPipeline(const MediaPipeline&) = delete;
+    MediaPipeline& operator=(const MediaPipeline&) = delete;
+
+    // ---- 生命周期 ----
+    /// 打开文件并启动 demux + decode 线程。失败抛 std::runtime_error。
+    void open(const std::string& url);
+
+    /// 异步停止：唤醒所有阻塞线程、释放资源。多次调用安全。
+    void close();
+
+    // ---- 状态 ----
+    PlayerStatus status() const { return status_; }
+    MediaInfo    info() const;
+    double      positionSec() const;
+    double      durationSec() const;
+    double      rate() const { return clock_.rate(); }
+    void        setRate(double r);
+    double      volume() const { return volume_; }
+    void        setVolume(double v); // 0.0–1.0
+
+    // ---- 帧访问（消费） ----
+    /// 阻塞取下一帧（视频或音频）。abort/close 后返回无效帧。
+    std::variant<VideoFrame, AudioFrame> takeFrame();
+
+    /// 取下一帧音频（视频节点保留给渲染层）。timeoutMs<0 无限等待；
+    /// 超时或队列中止且无音频时返回 nullopt。
+    std::optional<AudioFrame> takeAudioFrame(int timeoutMs = -1);
+
+    /// 不阻塞地获取最近一帧视频（暂停帧保持/拖拽预览）。
+    VideoFrame peekLatestVideo();
+
+    /// 按媒体时间取应显示的视频帧（音视频同步的关键）：
+    /// 返回 PTS <= ptsSec 中最早的一帧并移除；无到点帧时返回 nullopt。
+    std::optional<VideoFrame> takeVideoUpTo(double ptsSec, bool allowAhead = false);
+
+    /// 设置视频解码输出尺寸上限（0 表示按源尺寸输出）。
+    /// UI 层把渲染区尺寸告知管线，解码时就缩放到可用尺寸，
+    /// 避免 4K 源在高分屏上做无谓的大帧转换/上传（性能关键路径）。
+    void setVideoTargetSize(int w, int h);
+
+    // ---- 控制 ----
+    void play();
+    void pause();
+    void stop();
+
+    /// seek 到目标时间（秒）。异步；执行后管线可能短暂进入 Loading。
+    void seek(double sec);
+
+    /// 暂停状态下前进一帧（按帧间隔推断或解码一次）。
+    void stepFrame();
+
+    // ---- AI 字幕预留 ----
+    void registerAudioObserver(std::shared_ptr<AudioFrameObserver> obs);
+    void unregisterAudioObserver();
+
+    /// 外部音频输出层把已播放字节数反馈给主时钟。
+    void onAudioBytesPlayed(long long bytesPlayed, int sampleRate, int channels) {
+        clock_.onAudioBytesPlayed(bytesPlayed, sampleRate, channels);
+    }
+
+    /// 外部音频输出层上报"当前已送出的绝对媒体时间"（秒），作为主时钟。
+    void onAudioPosition(double sec) {
+        clock_.setAudioPts(sec);
+    }
+
+    /// 解封装是否已读到媒体末尾（此时音频/视频仍有缓冲待播）。
+    bool isDemuxDone() const { return demuxDone_.load(); }
+
+    /// 音频输出层在"持续取不到音频数据"时调用，判定播放真正结束：
+    /// 冻结时钟并置 Eof。仅在已读到末尾时生效。
+    void notifyPlaybackEof() {
+        if (!demuxDone_.load()) return;
+        if (!running_.load()) return;
+        clock_.pause();
+        if (status_.load() == PlayerStatus::Playing) setStatus(PlayerStatus::Eof);
+    }
+
+private:
+    void threadDemuxLoop();
+    void threadVideoDecodeLoop();
+    void threadAudioDecodeLoop();
+
+    void flushAll();
+    void setStatus(PlayerStatus s);
+
+    // FFmpeg 资源
+    AVFormatContext* fmt_ = nullptr;
+    AVCodecContext*  vdec_ = nullptr;
+    AVCodecContext*  adec_ = nullptr;
+    AVStream*        vst_ = nullptr;
+    AVStream*        ast_ = nullptr;
+
+    // demuxer 由 MediaPipeline 拥有
+    class Demuxer* demuxer_ = nullptr;
+
+    // demux / decode 队列
+    // 包队列给足缓冲：高码率 4K 下解码吞吐波动大，过小会让 demux 频繁阻塞。
+    PacketQueue videoPackets_{128};
+    PacketQueue audioPackets_{128};
+    // 帧队列：视频容量 = 24/2 = 12 帧（按显示尺寸解码后每帧约 2-3MB）。
+    // 容量过小会让解码器 drain 出的尾部帧被大量丢弃，表现为结尾几帧闪失。
+    // 音频容量单独放大到 ~1 秒（48 帧 × 21ms），避免音频欠载造成断音。
+    FrameQueue  frames_{24};
+
+    // 线程
+    std::thread demuxTh_;
+    std::thread videoDecTh_;
+    std::thread audioDecTh_;
+
+    // 状态
+    std::atomic<PlayerStatus> status_{PlayerStatus::Idle};
+    MediaInfo info_{};
+    AudioMasterClock clock_;
+    std::atomic<double> volume_{1.0};
+    std::atomic<bool> seekPending_{false};
+    std::atomic<double> seekTarget_{0.0};
+
+    // 速率与倍速
+    std::atomic<double> videoTimeBase_{0.0}; // 视频流的 time_base
+
+    // AI 字幕观察者
+    std::shared_ptr<AudioFrameObserver> audioObs_;
+    std::mutex obsMu_;
+
+    // 生命周期
+    std::atomic<bool> running_{false};
+    /// 解封装线程是否已读到末尾（播放结束的判定前置条件）。
+    std::atomic<bool> demuxDone_{false};
+    /// 视频解码输出尺寸上限（0=按源尺寸）。解码线程读取，UI 线程写入。
+    std::atomic<int> targetW_{0};
+    std::atomic<int> targetH_{0};
+};
+
+} // namespace vtcore

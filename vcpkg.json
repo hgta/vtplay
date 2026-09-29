@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+  "name": "vtplay",
+  "version-string": "0.1.0",
+  "description": "VTPlay — cross-platform desktop video/audio player built directly on FFmpeg.",
+  "dependencies": [
+    "ffmpeg[core,avcodec,avformat,swscale,swresample]",
+    "qt6-base",
+    "qt6-declarative",
+    "qt6-shadertools"
+  ]
+}
