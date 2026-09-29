@@ -87,10 +87,18 @@ void Decoder::runVideo() {
                 swsH_ = outH;
                 swsDst_ = AV_PIX_FMT_RGBA;
                 swsSrcFmt_ = srcFmt;
+
+                // 缩小时必须用「面积平均」类算法：双线性只采样 2x2 源像素，
+                // 在 4K→显示尺寸（数倍缩小）时会大量丢失细节并产生块状伪影
+                // （肉眼即"马赛克"）。SWS_AREA 会覆盖目标像素对应的整块源区域。
+                // 放大时用双线性即可（不会丢信息）。
+                const bool downscaling = (swsW_ < frame->width) || (swsH_ < frame->height);
+                const int flags = downscaling ? SWS_AREA : SWS_BILINEAR;
+
                 sws_ = sws_getContext(
                     frame->width, frame->height, static_cast<AVPixelFormat>(srcFmt),
                     swsW_, swsH_, swsDst_,
-                    SWS_BILINEAR, nullptr, nullptr, nullptr);
+                    flags, nullptr, nullptr, nullptr);
             }
 
             VideoFrame vf;

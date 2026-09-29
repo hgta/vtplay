@@ -7,8 +7,10 @@ import VTPlay 1.0
 
 ApplicationWindow {
     id: win
-    width: 1280
-    height: 720
+    // 初始窗口：小屏保持 1280x720，大屏按可用区域的 90% 放大（上限 1600x900）。
+    // 窗口越大，视频能占用的像素越多、画面越清晰；按 F 可全屏。
+    width:  Math.max(1280, Math.min(1600, Math.round(Screen.desktopAvailableWidth  * 0.9)))
+    height: Math.max(720,  Math.min(900,  Math.round(Screen.desktopAvailableHeight * 0.9)))
     minimumWidth: 800
     minimumHeight: 500
     visible: true
