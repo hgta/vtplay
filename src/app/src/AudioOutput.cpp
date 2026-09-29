@@ -11,19 +11,24 @@
 #include <QDebug>
 #include <algorithm>
 #include <cstring>
-#include <thread>
 
 namespace vtapp {
 
 qint64 AudioOutput::PcmDevice::readData(char* data, qint64 maxlen) {
-    if (!out->pipeline_) return 0;
+    // 拉模式契约：必须尽量填满缓冲并返回非零长度。
+    // 一旦返回 0，QAudioSink 会判定欠载 → 进入 IdleState 并**停止继续拉取**，
+    // 之后即使状态恢复为 Playing 也不会再调用本函数（表现为"永久无声"）。
+    // 因此任何无数据的情况都用静音样本填充，保证设备始终在运行。
+    if (!out->pipeline_) {
+        std::memset(data, 0, static_cast<size_t>(maxlen));
+        return maxlen;
+    }
 
-    // 仅在播放中消费音频：暂停/未打开/已结束时静音（否则暂停后声音仍在继续）。
-    // 短暂让出 CPU，避免拉模式下的忙转。
+    // 未打开媒体 / 暂停 / 已结束：输出静音（设备保持运行，恢复播放立即有声）。
     const auto st = out->pipeline_->status();
     if (st != vtcore::PlayerStatus::Playing) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        return 0;
+        std::memset(data, 0, static_cast<size_t>(maxlen));
+        return maxlen;
     }
 
     qint64 produced = 0;
@@ -66,7 +71,12 @@ qint64 AudioOutput::PcmDevice::readData(char* data, qint64 maxlen) {
     } else {
         out->emptyStreak_ = 0;
     }
-    return produced;
+
+    // 数据不足时用静音补齐，保证返回值非零（见函数开头的契约说明）。
+    if (produced < maxlen) {
+        std::memset(data + produced, 0, static_cast<size_t>(maxlen - produced));
+    }
+    return maxlen;
 }
 
 AudioOutput::AudioOutput(QObject* parent) : QObject(parent) {
