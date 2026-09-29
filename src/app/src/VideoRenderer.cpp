@@ -27,9 +27,14 @@ void VideoRenderer::onTick() {
     // 把渲染区尺寸告诉管线：解码时直接缩放到可用尺寸，
     // 避免 4K 源全尺寸转换/上传（4K 播放性能的关键）。
     const QSizeF s = size();
+    // 解码尺寸必须按**物理像素**计算（逻辑尺寸 × devicePixelRatio）。
+    // 高 DPI 屏（如 150%）上，若只按逻辑尺寸解码，纹理会被 QSG 放大 1.5 倍
+    // 显示 → 画面明显模糊（这是"本地播放不如原片清晰"的根本原因）。
+    // 临时：VTPLAY_IGNORE_DPR=1 复现修复前的行为（用于画质对比验证）
+    const qreal dpr = window() ? window()->devicePixelRatio() : 1.0;
     if (s.width() >= 2.0 && s.height() >= 2.0) {
-        const int w = static_cast<int>(s.width());
-        const int h = static_cast<int>(s.height());
+        const int w = static_cast<int>(s.width()  * dpr);
+        const int h = static_cast<int>(s.height() * dpr);
         if (w != lastTargetW_ || h != lastTargetH_) {
             lastTargetW_ = w;
             lastTargetH_ = h;

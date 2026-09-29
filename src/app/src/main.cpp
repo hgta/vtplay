@@ -4,6 +4,8 @@
 #include <QQuickStyle>
 #include <QUrl>
 
+#include <cstdio>
+
 #include "PlayerController.h"
 #include "VideoRenderer.h"
 #include "AudioOutput.h"
@@ -12,6 +14,16 @@ int main(int argc, char* argv[]) {
     QGuiApplication app(argc, argv);
     app.setOrganizationName("VTPlay");
     app.setApplicationName("VTPlay");
+
+    // 启动横幅：便于确认运行的是哪个构建（排查"跑的到底是不是最新版"）
+    std::fprintf(stderr,
+        "=== VTPlay %s ===\n"
+        "build: %s %s\n"
+        "qt: %s\n",
+        "0.1.0",
+        __DATE__, __TIME__,
+        qVersion());
+    std::fflush(stderr);
 
     QQuickStyle::setStyle("Basic");
 
