@@ -215,12 +215,13 @@ void MediaPipeline::seek(double sec) {
     if (sec < 0) sec = 0;
     if (info_.durationSec > 0 && sec > info_.durationSec) sec = info_.durationSec;
 
+    // 时钟立刻跳到目标位置：渲染层据此判断"该显示哪一帧"。
+    clock_.setAudioPts(sec);
+    // 丢弃已解码的旧帧，否则 seek 后仍会播出原位置的音视频（听起来位置错乱）。
+    frames_.reset();
+    // 请求解封装线程清空包队列并定位；这里不阻塞、也不改变播放状态
+    // （原实现在主线程 sleep 20ms 并强制置为 Paused，导致拖动进度条后播放停止）。
     if (demuxer_) demuxer_->requestSeek(sec);
-
-    setStatus(PlayerStatus::Loading);
-    // 等待 demuxer 清空旧队列并 seek；下一次循环可见。
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    setStatus(PlayerStatus::Paused);
 }
 
 void MediaPipeline::stepFrame() {

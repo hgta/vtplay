@@ -12,11 +12,23 @@ Rectangle {
     anchors.right: parent.right
     anchors.bottom: parent.bottom
     anchors.margins: 12
-    opacity: visible ? 1 : 0
+    // 显隐只由 opacity 单向驱动（visible 不可反向绑定 opacity，否则构成绑定循环）
+    opacity: 0
     visible: opacity > 0
     Behavior on opacity { NumberAnimation { duration: 200 } }
 
+    /// 鼠标是否停留在控制条上（外层据此决定是否自动隐藏，避免打断拖动）。
+    property alias hovered: barHover.containsMouse
+
     function fmtTime(s) { return Theme.fmtTime(s); }
+
+    // 仅做悬停检测，不接收点击（acceptedButtons 为 NoButton 时不拦截子控件点击）
+    MouseArea {
+        id: barHover
+        anchors.fill: parent
+        hoverEnabled: true
+        acceptedButtons: Qt.NoButton
+    }
 
     RowLayout {
         anchors.fill: parent

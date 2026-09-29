@@ -9,6 +9,9 @@ Item {
     property bool hasMedia: false
     property string mediaUrl: ""
 
+    /// 鼠标在视频区活动（移动/按下），供外层刷新控制条显隐计时。
+    signal pointerActivity()
+
     VideoRenderer {
         id: renderer
         anchors.fill: parent
@@ -49,24 +52,24 @@ Item {
         }
     }
 
+    // 视频区鼠标交互：hover 上报（用于显示控制条）+ 双击全屏。
+    // 注意不能吞掉点击事件——控制条位于更高 z 层，其上的点击由控制条自己处理。
     MouseArea {
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton
+        hoverEnabled: true
+        onPositionChanged: root.pointerActivity()
+        onPressed: root.pointerActivity()
         onDoubleClicked: player.toggleFullscreen()
-        onPressed: function(m) { drag.target = root; }
-        onReleased: drag.target = null
-        DropArea {
-            anchors.fill: parent
-            onDropped: function(drop) {
-                if (drop.hasUrls && drop.urls.length > 0) {
-                    player.openUrl(drop.urls[0]);
-                }
-            }
-        }
     }
 
-    // 拉鼠标移动激活控制条（简化：直接通过全局 hover）
-    HoverHandler {
-        id: hover
+    // 拖拽文件到窗口打开
+    DropArea {
+        anchors.fill: parent
+        onDropped: function(drop) {
+            if (drop.hasUrls && drop.urls.length > 0) {
+                player.openUrl(drop.urls[0]);
+            }
+        }
     }
 }

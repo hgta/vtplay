@@ -67,14 +67,18 @@ ApplicationWindow {
     Item {
         anchors.fill: parent
         anchors.topMargin: 36
+
+        // 1) 视频画面（最底层）
         VideoSurface {
             id: surface
             anchors.fill: parent
             hasMedia: player.hasVideo || player.hasAudio
+            onPointerActivity: { controls.opacity = 1; hideTimer.restart() }
         }
 
-        // 错误提示
+        // 2) 错误提示
         Rectangle {
+            z: 5
             visible: player.errorString.length > 0
             color: "#5A1F1F"
             border.color: "#FF6464"
@@ -93,30 +97,21 @@ ApplicationWindow {
             }
         }
 
-        // 控制条 + 自动隐藏
+        // 3) 控制条：必须位于最上层（z 最高），否则会被视频区的鼠标区域遮挡而点不到。
+        //    只通过 opacity 控制显隐（避免 visible/opacity 相互绑定的循环）。
         ControlsBar {
             id: controls
-            visible: false
+            z: 10
             opacity: 0
         }
 
-        // 鼠标静止 3s 隐藏控制条；移动恢复
+        // 鼠标静止 3s 隐藏控制条；鼠标停留在控制条上时不隐藏（否则会打断拖动）
         Timer {
             id: hideTimer
             interval: 3000
-            running: true
             repeat: true
-            onTriggered: { controls.opacity = 0; controls.visible = false }
-        }
-        MouseArea {
-            anchors.fill: parent
-            hoverEnabled: true
-            onPositionChanged: {
-                controls.visible = true
-                controls.opacity = 1
-                hideTimer.restart()
-            }
-            onExited: { /* leave hide timer running */ }
+            running: true
+            onTriggered: { if (!controls.hovered) controls.opacity = 0 }
         }
     }
 
