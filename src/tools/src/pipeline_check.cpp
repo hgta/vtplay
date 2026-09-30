@@ -12,11 +12,16 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <thread>
 #include <variant>
 
 int main(int argc, char** argv) {
+    // 输出不缓冲：重定向到文件时默认是块缓冲，跑到一半卡住会看不到任何进度，
+    // 无法判断停在哪一步（自测本身有 20~30 秒的等待阶段）。
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     if (argc < 2) {
         std::fprintf(stderr, "usage: pipeline_check <file>\n");
         return 2;
@@ -81,14 +86,29 @@ int main(int argc, char** argv) {
     std::printf("latest video pts after 5s: %.3fs (valid=%d)\n", v.ptsSec, (int)v.valid);
 
     stop.store(true);
+    // 必须先 close 再 join：消费者线程阻塞在 takeFrame() 的队列等待上，单靠 stop
+    // 标记唤不醒它。短文件尤其明显——解码线程几秒就把整片读完并退出，消费者随后
+    // 永久阻塞，join() 直接挂住（实测 10s/1.1MB 的片段必现，4K 长片反而没事）。
+    p.close();
     if (consumer.joinable()) consumer.join();
 
+    std::printf("stats: videoFrames=%ld audioFrames=%ld\n",
+        videoFrames.load(), audioFrames.load());
+
     // ---- 逐帧步进自测 ----
+    // 另开一次管线：上面的消费者线程已退出，不会再来抢帧。
     // 用与 VideoRenderer::onTick 相同的取帧逻辑模拟「渲染层」：每一拍把到点的帧
     // 全部取走、只留最后一个。这样测的是「用户看到的画面是否真的变了」，
     // 而不是只看时钟数值。
     // 与 VideoRenderer::onTick 保持一致：播放中留 20ms 容差，暂停/逐帧不留。
     // 这里必须同口径，否则测出来的步进幅度会与真实观感不符（曾因此误判为「跳两帧」）。
+    try {
+        p.open(argv[1]);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "reopen failed: %s\n", e.what());
+        return 4;
+    }
+
     double lastShown = -1.0;
     auto pumpDisplay = [&]() -> double {
         const double tol = (p.status() == vtcore::PlayerStatus::Playing) ? 0.02 : 0.0;
@@ -165,8 +185,5 @@ int main(int argc, char** argv) {
                 backOk, backOk ? backMs / backOk : 0.0, prev, basePts);
 
     p.close();
-
-    std::printf("stats: videoFrames=%ld audioFrames=%ld\n",
-        videoFrames.load(), audioFrames.load());
     return (fwdOk == 5 && backOk == 5) ? 0 : 3;
 }
