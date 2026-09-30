@@ -200,10 +200,14 @@ ApplicationWindow {
     DropArea {
         anchors.fill: parent
         onDropped: function(drop) {
-            if (drop.hasUrls && drop.urls.length > 0) {
-                player.addToPlaylist(drop.urls)
-                drop.acceptProposedAction()
-            }
+            if (!drop.hasUrls || drop.urls.length === 0) return
+            // 记到日志：拖放进来的文件数量与顺序，出了问题不用靠猜
+            const names = []
+            for (let i = 0; i < drop.urls.length; ++i)
+                names.push(drop.urls[i].toString().split("/").pop())
+            console.log("[drop] 收到 " + drop.urls.length + " 个文件: " + names.join(", "))
+            player.addToPlaylist(drop.urls)
+            drop.acceptProposedAction()
         }
     }
 

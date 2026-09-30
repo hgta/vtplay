@@ -671,6 +671,7 @@ void PlayerController::setLoopMode(const QString& mode) {
 void PlayerController::addToPlaylist(const QList<QUrl>& urls) {
     if (urls.isEmpty()) return;
     const bool wasEmpty = playlist_.isEmpty();
+    const int  before   = playlist_.size();
     for (const QUrl& u : urls) {
         const QString p = u.toLocalFile().isEmpty() ? u.toString() : u.toLocalFile();
         if (p.isEmpty()) continue;
@@ -682,7 +683,11 @@ void PlayerController::addToPlaylist(const QList<QUrl>& urls) {
     emit playlistChanged();
 
     // 队列为空且当前没有媒体时，直接开始播放第一项
-    if (wasEmpty && !hasMedia()) playlistPlayAt(0);
+    const bool autoPlay = wasEmpty && !hasMedia();
+    // 「拖进去没反应」时先看这一行：能区分「事件没到」和「到了但被去重/过滤掉」
+    qInfo("[playlist] 入队 +%d -> 共 %d 项, 自动播放=%s",
+          playlist_.size() - before, playlist_.size(), autoPlay ? "yes" : "no");
+    if (autoPlay) playlistPlayAt(0);
 }
 
 void PlayerController::playlistPlayAt(int index) {
