@@ -63,13 +63,6 @@ Item {
         onDoubleClicked: player.toggleFullscreen()
     }
 
-    // 拖拽文件到窗口打开
-    DropArea {
-        anchors.fill: parent
-        onDropped: function(drop) {
-            if (drop.hasUrls && drop.urls.length > 0) {
-                player.openUrl(drop.urls[0]);
-            }
-        }
-    }
+    // 拖放统一由 Main.qml 的窗口级 DropArea 处理（支持多文件入队）。
+    // 这里不再放 DropArea：嵌套 DropArea 会先截获事件，导致拖入多个文件只打开第一个。
 }

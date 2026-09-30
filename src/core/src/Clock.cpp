@@ -15,8 +15,11 @@ void AudioMasterClock::start() {
 
 void AudioMasterClock::pause() {
     if (paused_.exchange(true)) return;
+    // 冻结在「当前实际位置」而非 virtualPtsSec_：后者只在音频输出层上报位置时
+    // 才更新，纯视频文件（或音频尚未出声时）永远是 0，直接用它会让暂停瞬间把
+    // 进度跳到 0（进度条归零、画面基准错位）。这是 headless 自测暴露出来的。
+    pausedVirtualAt_ = runningSec();
     pausedAt_ = std::chrono::steady_clock::now();
-    pausedVirtualAt_ = virtualPtsSec_.load();
 }
 
 void AudioMasterClock::resume() {
@@ -38,18 +41,22 @@ double AudioMasterClock::nowSec() const {
     if (!started_.load()) {
         return 0.0;  // 尚未打开媒体：位置为 0，避免未初始化墙钟产生跳变
     }
-    if (paused_.load()) {
-        return pausedVirtualAt_;
-    }
+    return paused_.load() ? pausedVirtualAt_ : runningSec();
+}
+
+double AudioMasterClock::runningSec() const {
     // 音频主时钟：设备实际送出的位置最可靠，且不会越过媒体末尾。
-    double aPts = audioPtsSec_.load();
+    const double aPts = audioPtsSec_.load();
     if (aPts > 0.0) return aPts;
 
     // 无音频轨道时回退到墙钟（按倍速缩放）。
-    auto now = std::chrono::steady_clock::now();
-    double wall = std::chrono::duration<double>(now - wallStart_).count();
-    double r = rate_.load();
-    return std::isfinite(wall) ? wall * r : 0.0;
+    const auto now = std::chrono::steady_clock::now();
+    const double wall = std::chrono::duration<double>(now - wallStart_).count() * rate_.load();
+    if (std::isfinite(wall) && wall > 0.0) return wall;
+
+    // 墙钟也不可用（未 start 满一拍等）：退回最近一次已知位置，
+    // 至少不会把位置抹成 0。可能来自 seek 的 setAudioPts()。
+    return virtualPtsSec_.load();
 }
 
 void AudioMasterClock::onAudioBytesPlayed(long long bytesPlayed, int sampleRate, int channels) {

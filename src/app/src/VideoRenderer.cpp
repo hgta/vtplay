@@ -46,13 +46,18 @@ void VideoRenderer::onTick() {
     const double mediaSec = pipeline_->positionSec();
     const bool draining = pipeline_->isDemuxDone();
 
+    // 取帧容差：播放中放宽 20ms 吸收时钟抖动；暂停/逐帧时**不放宽**。
+    // 逐帧步进尤其依赖这一点——容差比一帧（60fps 下 16.7ms）还大，
+    // 会让「前进一帧」顺手把下一帧也吃掉，表现为偶尔跳两帧。
+    const double tol = (pipeline_->status() == vtcore::PlayerStatus::Playing) ? 0.02 : 0.0;
+
     std::optional<vtcore::VideoFrame> chosen;
     if (draining) {
         // 结尾 drain：允许超前取帧，每 tick 取一帧，让末尾数帧也能依次显示。
-        chosen = pipeline_->takeVideoUpTo(mediaSec + 0.02, true);
+        chosen = pipeline_->takeVideoUpTo(mediaSec + tol, true);
     } else {
         // 正常播放：把到点的帧全部取走，只显示最后一个，避免积压导致延迟增长。
-        while (auto v = pipeline_->takeVideoUpTo(mediaSec + 0.02, false)) {
+        while (auto v = pipeline_->takeVideoUpTo(mediaSec + tol, false)) {
             chosen = std::move(v);
         }
     }

@@ -18,6 +18,15 @@ public:
     explicit VideoRenderer(QQuickItem* parent = nullptr);
     void attach(vtcore::MediaPipeline* pipeline);
 
+    /// 当前显示帧的副本（**纯画面**：不含界面元素，也不含 letterbox 黑边）。
+    /// 尺寸为解码输出尺寸（≈ 渲染区物理像素），因此比抓屏更干净、无锯齿黑边。
+    /// 无帧时返回空 QImage。
+    ///
+    /// 线程安全：image_ 只在渲染线程的 updatePaintNode 里被替换，而那一阶段
+    /// GUI 线程是被同步阻塞的，所以从 GUI 线程调用本函数不会撞上写入；
+    /// 且替换是整体 move（不是原地改内存），取到旧引用也依然有效。
+    QImage currentFrameImage() const { return image_; }
+
 protected:
     QSGNode* updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) override;
 

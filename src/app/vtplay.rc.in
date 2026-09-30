@@ -1,0 +1,35 @@
+// Windows 资源脚本模板：由 CMake configure_file 生成（版本号单一来源）。
+// 说明：元数据刻意使用英文 —— .rc 中的中文在不同 windres/代码页组合下易乱码，
+// 界面内的中文文案由 QML 提供。
+
+#include <windows.h>
+
+IDI_ICON1 ICON "@VTPLAY_ICON_PATH@"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    @VTPLAY_RC_VERSION@
+ PRODUCTVERSION @VTPLAY_RC_VERSION@
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "VTPlay"
+            VALUE "FileDescription",  "VTPlay Media Player"
+            VALUE "FileVersion",      "@VTPLAY_VERSION@"
+            VALUE "InternalName",     "vtplay"
+            VALUE "OriginalFilename", "vtplay.exe"
+            VALUE "ProductName",      "VTPlay"
+            VALUE "ProductVersion",   "@VTPLAY_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

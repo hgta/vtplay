@@ -10,7 +10,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <optional>
 #include <thread>
 #include <variant>
 
@@ -32,6 +34,16 @@ int main(int argc, char** argv) {
         info.durationSec, info.videoWidth, info.videoHeight,
         (int)info.hasVideo, (int)info.hasAudio,
         info.videoCodec.c_str(), info.audioCodec.c_str());
+
+    // 扩展元数据（供界面展示与导出估算；不可用字段以 "—" 表示）
+    std::printf("file   : %s (%s)\n",
+        info.fileName.empty() ? "(none)" : info.fileName.c_str(),
+        vtcore::formatSize(info.fileSizeBytes).c_str());
+    std::printf("video  : %s\n", vtcore::formatBitrate(info.videoBitRate).c_str());
+    std::printf("audio  : %dHz %dch %s\n",
+        info.audioSampleRate, info.audioChannels,
+        vtcore::formatBitrate(info.audioBitRate).c_str());
+    std::printf("summary: %s\n", vtcore::formatSpecSummary(info).c_str());
 
     std::atomic<long> videoFrames{0};
     std::atomic<long> audioFrames{0};
@@ -69,10 +81,74 @@ int main(int argc, char** argv) {
     std::printf("latest video pts after 5s: %.3fs (valid=%d)\n", v.ptsSec, (int)v.valid);
 
     stop.store(true);
-    p.close();
     if (consumer.joinable()) consumer.join();
+
+    // ---- 逐帧步进自测 ----
+    // 用与 VideoRenderer::onTick 相同的取帧逻辑模拟「渲染层」：每一拍把到点的帧
+    // 全部取走、只留最后一个。这样测的是「用户看到的画面是否真的变了」，
+    // 而不是只看时钟数值。
+    // 与 VideoRenderer::onTick 保持一致：播放中留 20ms 容差，暂停/逐帧不留。
+    // 这里必须同口径，否则测出来的步进幅度会与真实观感不符（曾因此误判为「跳两帧」）。
+    double lastShown = -1.0;
+    auto pumpDisplay = [&]() -> double {
+        const double tol = (p.status() == vtcore::PlayerStatus::Playing) ? 0.02 : 0.0;
+        std::optional<vtcore::VideoFrame> chosen;
+        while (auto f = p.takeVideoUpTo(p.positionSec() + tol, false)) {
+            chosen = std::move(f);
+        }
+        if (chosen && chosen->valid) lastShown = chosen->ptsSec;
+        return lastShown;
+    };
+
+    p.pause();
+    for (int i = 0; i < 40 && lastShown < 0.0; ++i) {
+        pumpDisplay();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    const double basePts = lastShown;
+    std::printf("step: baseline pts=%.3f (fps=%.2f)\n", basePts, info.videoFrameRate);
+
+    // 步进一次并等「画面稳定」再取值。
+    // 不能一看到变化就返回：后退要回关键帧重解，seek 后先解出来的是关键帧本身
+    // （可能比目标早半秒），那一刻读到的是中间态而不是最终落点。
+    auto stepOnce = [&](int dir, double from, int budgetMs) -> double {
+        if (!p.stepFrame(dir)) return from;
+        double last = pumpDisplay();
+        int stable = 0;
+        for (int k = 0; k < budgetMs / 20; ++k) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            const double v = pumpDisplay();
+            if (std::abs(v - last) < 1e-6) {
+                if (++stable >= 8) break;      // 连续 8 拍(160ms)不再变化 -> 认为已稳定
+            } else {
+                stable = 0;
+            }
+            last = v;
+        }
+        return last;
+    };
+
+    int fwdOk = 0, backOk = 0;
+    double prev = basePts;
+    for (int i = 1; i <= 5; ++i) {
+        const double next = stepOnce(+1, prev, 600);
+        std::printf("  step +1 #%d -> pts=%.3f (delta=%+.4f)\n", i, next, next - prev);
+        if (next > prev + 1e-6) ++fwdOk;
+        prev = next;
+    }
+    for (int i = 1; i <= 5; ++i) {
+        // 后退要回关键帧重解，给足预算
+        const double next = stepOnce(-1, prev, 2000);
+        std::printf("  step -1 #%d -> pts=%.3f (delta=%+.4f)\n", i, next, next - prev);
+        if (next < prev - 1e-6) ++backOk;
+        prev = next;
+    }
+    std::printf("step: forward %d/5 ok, backward %d/5 ok, returned to %.3f from %.3f\n",
+                fwdOk, backOk, prev, basePts);
+
+    p.close();
 
     std::printf("stats: videoFrames=%ld audioFrames=%ld\n",
         videoFrames.load(), audioFrames.load());
-    return 0;
+    return (fwdOk == 5 && backOk == 5) ? 0 : 3;
 }

@@ -11,6 +11,13 @@ QtObject {
     readonly property color textDim:   "#9A9A9A"
     readonly property color border:    "#2A2A2A"
 
+    // 交互态：hover/pressed 统一取色，避免各组件各写一套
+    readonly property color hover:     "#242424"
+    readonly property color pressed:   "#2E2E2E"
+    readonly property color overlay:   "#E60D0D0D"   // 半透明遮罩（对话框底）
+    readonly property color danger:    "#FF6464"
+    readonly property color dangerBg:  "#5A1F1F"
+
     readonly property int   radiusS:    8
     readonly property int   radiusM:    12
     readonly property int   radiusL:    16
@@ -18,6 +25,15 @@ QtObject {
     readonly property int   padS:       6
     readonly property int   padM:       10
     readonly property int   padL:       16
+
+    // 尺寸常量：顶栏/侧栏/信息条统一，避免布局各处硬编码
+    readonly property int   topBarH:    40
+    readonly property int   infoBarH:   24
+    readonly property int   sidebarW:   248
+    readonly property int   rowH:       34
+
+    readonly property int   durFast:    120
+    readonly property int   durNormal:  180
 
     function fmtTime(sec) {
         if (!isFinite(sec) || sec < 0) sec = 0;

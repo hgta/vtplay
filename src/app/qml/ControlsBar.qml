@@ -6,6 +6,9 @@ import VTPlay 1.0
 Rectangle {
     id: bar
     height: 56
+
+    /// 请求打开导出对话框（由 Main.qml 处理：工具栏不该自己持有弹窗）
+    signal exportRequested()
     color: Theme.panel
     radius: Theme.radiusM
     anchors.left: parent.left
@@ -63,6 +66,18 @@ Rectangle {
             Layout.preferredWidth: 130
         }
 
+        // 当前文件名：全屏时唯一能确认播放内容的位置。
+        // 宽度受限 + 中间省略，保证长文件名不撑破控制条。
+        Text {
+            visible: player.fileName.length > 0
+            text: player.fileName
+            color: Theme.textDim
+            font.pixelSize: 12
+            elide: Text.ElideMiddle
+            Layout.preferredWidth: Math.min(implicitWidth, 180)
+            Layout.alignment: Qt.AlignVCenter
+        }
+
         // 进度条
         Item {
             Layout.fillWidth: true
@@ -101,20 +116,53 @@ Rectangle {
             }
         }
 
-        // 倍速
-        ComboBox {
-            model: [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-            currentIndex: 2
-            onActivated: player.rate = model[currentIndex]
-            Layout.preferredWidth: 80
+        // 倍速：紧凑按钮 + 深色弹出列表（替代 Basic 浅色 ComboBox）
+        Rectangle {
+            id: speedBtn
+            Layout.preferredWidth: speedLabel.implicitWidth + Theme.padM * 2
+            height: 28
+            radius: Theme.radiusS
+            color: speedArea.containsMouse ? Theme.hover : "transparent"
+            border.width: 1
+            border.color: Theme.border
+
+            Text {
+                id: speedLabel
+                anchors.centerIn: parent
+                text: {
+                    var r = player.rate
+                    return (r === Math.round(r) ? r.toFixed(1) : String(r)) + "×"
+                }
+                color: Theme.text
+                font.pixelSize: 12
+            }
+            MouseArea {
+                id: speedArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: speedMenu.opened ? speedMenu.close() : speedMenu.open()
+            }
+
+            SpeedMenu {
+                id: speedMenu
+                parent: speedBtn
+                // 贴在按钮上方展开（控制条本来就位于窗口底部）
+                x: 0
+                y: -implicitHeight - 6
+                current: player.rate
+                onPicked: function(r) { player.rate = r }
+            }
         }
 
         // 音量
         Row {
             spacing: 6
+            height: 28
+
             Rectangle {
                 width: 28; height: 28; radius: Theme.radiusS
-                color: "transparent"
+                color: muteArea.containsMouse ? Theme.hover : "transparent"
                 Text {
                     anchors.centerIn: parent
                     text: player.muted || player.volume === 0 ? "🔇" : "🔊"
@@ -122,15 +170,42 @@ Rectangle {
                     font.pixelSize: 14
                 }
                 MouseArea {
+                    id: muteArea
                     anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
                     onClicked: player.muted = !player.muted
                 }
             }
-            Slider {
-                from: 0; to: 1.0
+
+            VolumeSlider {
+                width: 100
+                height: 28
                 value: player.volume
-                onMoved: player.volume = value
-                Layout.preferredWidth: 100
+                onMoved: function(v) { player.volume = v }
+            }
+        }
+
+        // 导出（无媒体或转码器不可用时禁用）
+        // 注意：自定义属性不能叫 enabled —— Item 基类已有该成员，会触发属性覆盖告警
+        Rectangle {
+            id: exportBtn
+            width: 40; height: 40; radius: Theme.radiusS
+            property bool actionEnabled: player.hasMedia && player.ffmpegAvailable
+            opacity: actionEnabled ? 1.0 : 0.35
+            color: (expArea.containsMouse && actionEnabled) ? Theme.border : "transparent"
+            Text {
+                anchors.centerIn: parent
+                text: "⬇"
+                color: Theme.text
+                font.pixelSize: 16
+            }
+            MouseArea {
+                id: expArea
+                anchors.fill: parent
+                hoverEnabled: true
+                enabled: exportBtn.actionEnabled
+                onClicked: bar.exportRequested()
             }
         }
 

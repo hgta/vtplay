@@ -85,8 +85,15 @@ public:
     /// seek 到目标时间（秒）。异步；执行后管线可能短暂进入 Loading。
     void seek(double sec);
 
-    /// 暂停状态下前进一帧（按帧间隔推断或解码一次）。
-    void stepFrame();
+    /// 暂停状态下按帧步进：direction > 0 前进一帧，< 0 后退一帧。
+    /// 返回是否真的发生了步进（非暂停、或无视频轨道时返回 false）。
+    ///
+    /// 两个方向代价不同，因为解码是单向的：
+    ///   前进——解码线程本来就在跑，帧队列里已有未来的帧，只需把时钟推过下一帧，
+    ///         渲染层下一拍就会显示它（无需 seek，代价接近零）；
+    ///   后退——队列里没有已过去的帧，只能 seek 回关键帧再解码到目标，
+    ///         因此耗时取决于关键帧间隔（GOP 越长越慢）。
+    bool stepFrame(int direction);
 
     // ---- AI 字幕预留 ----
     void registerAudioObserver(std::shared_ptr<AudioFrameObserver> obs);
@@ -121,6 +128,10 @@ private:
 
     void flushAll();
     void setStatus(PlayerStatus s);
+
+    /// 单帧时长（秒）。帧率不可信时按 25fps 兜底：宁可步进幅度略偏，
+    /// 也不要原地不动——后者会让用户以为功能坏了。
+    double frameInterval() const;
 
     // FFmpeg 资源
     AVFormatContext* fmt_ = nullptr;
@@ -175,6 +186,9 @@ private:
     /// 音频输出格式（决定 libswresample 的重采样目标）。
     std::atomic<int> audioRate_{48000};
     std::atomic<int> audioChannels_{2};
+    /// 最近一次交给渲染层的视频帧 PTS。逐帧步进以它为基准，而不是用时钟：
+    /// 时钟可能停在两帧之间的任意位置，用它加减一帧会时而跳两帧、时而原地不动。
+    std::atomic<double> lastVideoPts_{0.0};
 };
 
 } // namespace vtcore

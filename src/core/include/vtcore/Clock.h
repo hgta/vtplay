@@ -29,6 +29,9 @@ public:
     double rate() const { return rate_; }
 
 private:
+    /// 运行态位置（不考虑暂停冻结）。暂停时用它作为冻结值。
+    double runningSec() const;
+
     std::atomic<double> audioPtsSec_{0.0};   // 累计音频 PTS
     std::atomic<double> virtualPtsSec_{0.0}; // 暂停期间冻结 / 倍速播放时的虚拟时间
     std::atomic<bool>   paused_{false};

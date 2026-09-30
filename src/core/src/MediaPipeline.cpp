@@ -12,9 +12,12 @@ extern "C" {
 #include "Demuxer.h"
 
 #include <algorithm>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <stdexcept>
+#include <system_error>
 #include <thread>
 
 namespace vtcore {
@@ -64,8 +67,15 @@ void MediaPipeline::open(const std::string& url) {
     }
 
     info_.url = url;
+    info_.fileName = fileNameFromPath(url);
     info_.durationSec = (fmt_->duration == AV_NOPTS_VALUE) ? 0.0
                         : static_cast<double>(fmt_->duration) / AV_TIME_BASE;
+    // 文件大小仅对本地路径有意义；URL 或文件不可访问时保持 0（界面据此降级显示）。
+    {
+        std::error_code ec;
+        const auto sz = std::filesystem::file_size(url, ec);
+        if (!ec) info_.fileSizeBytes = static_cast<int64_t>(sz);
+    }
 
     int bestV = -1, bestA = -1;
     for (unsigned i = 0; i < fmt_->nb_streams; ++i) {
@@ -106,6 +116,19 @@ void MediaPipeline::open(const std::string& url) {
         info_.videoHeight = vst_->codecpar->height;
         AVRational fr = av_guess_frame_rate(fmt_, vst_, nullptr);
         info_.videoFrameRate = (fr.num && fr.den) ? av_q2d(fr) : 0.0;
+        // 注意：FFmpeg 7+ 已移除 AVStream::bit_rate，只能取 codecpar 的值；
+        // 为 0 表示容器未写入流级码率，由下方容器级估算兜底。
+        info_.videoBitRate = vst_->codecpar->bit_rate;
+    }
+    if (ast_) {
+        info_.audioSampleRate = ast_->codecpar->sample_rate;
+        info_.audioChannels   = ast_->codecpar->ch_layout.nb_channels;
+        info_.audioBitRate    = ast_->codecpar->bit_rate;
+    }
+    // MP4/MOV 通常不写流级视频码率：退化为「容器总码率 − 音频码率」的估算。
+    if (info_.videoBitRate <= 0 && fmt_->bit_rate > 0) {
+        const int64_t est = fmt_->bit_rate - info_.audioBitRate;
+        if (est > 0) info_.videoBitRate = est;
     }
 
     // 复用队列对象：abort 标志与残留数据必须先复位，
@@ -181,6 +204,8 @@ void MediaPipeline::close() {
     if (audioDecTh_.joinable()) audioDecTh_.join();
 
     flushAll();
+    // 清空元数据：否则界面会残留上一个文件的名称与规格。
+    info_ = MediaInfo{};
     setStatus(PlayerStatus::Idle);
     clock_.reset();
 }
@@ -224,13 +249,37 @@ void MediaPipeline::seek(double sec) {
     if (demuxer_) demuxer_->requestSeek(sec);
 }
 
-void MediaPipeline::stepFrame() {
-    if (status_.load() != PlayerStatus::Paused) return;
-    // MVP 简化：仅刷新最近一帧后立即显示（实际需要按帧间隔解码一帧）。
-    VideoFrame v = frames_.peekLatestVideo();
-    if (v.valid) {
-        frames_.pushVideo(std::move(v));
+double MediaPipeline::frameInterval() const {
+    const double fps = info_.videoFrameRate;
+    return (fps > 0.5 && fps < 1000.0) ? (1.0 / fps) : (1.0 / 25.0);
+}
+
+bool MediaPipeline::stepFrame(int direction) {
+    if (status_.load() != PlayerStatus::Paused) return false;
+    if (!info_.hasVideo) return false;
+
+    const double interval = frameInterval();
+    double base = lastVideoPts_.load();
+    // 还没有过任何帧（刚打开/刚 seek 完）时退回时钟，至少能朝正确方向动
+    if (base <= 0.0) base = positionSec();
+
+    if (direction > 0) {
+        // 前进同样走 seek，而不是「只把时钟推一格」。
+        //
+        // 后者看似零成本（解码线程在跑、队列像是有后续帧），但并不可靠：
+        // FrameQueue 的视频侧是「超出容量丢最旧」（见 videoCapacity_ 的说明），
+        // 而解码在暂停时并不停，已解码但还没显示的那几帧随时可能被丢掉。
+        // 自测里连续前进两步后就取不到帧了，正是这个原因。
+        // 回关键帧重解慢一点（几十~几百毫秒），但结果是确定的。
+        //
+        // 目标取 1.2 个帧间隔：稳稳包住下一帧，又不会越过下下帧（1.2 < 2）。
+        seek(base + interval * 1.2);
+    } else {
+        // 后退：解码是单向的，队列里没有已过去的帧，只能回到关键帧重解。
+        // 目标取在「上一帧区间内」（-0.5 个间隔），保证取到的是上一帧而不是当前帧。
+        seek(std::max(0.0, base - interval * 0.5));
     }
+    return true;
 }
 
 std::variant<VideoFrame, AudioFrame> MediaPipeline::takeFrame() {
@@ -246,7 +295,10 @@ VideoFrame MediaPipeline::peekLatestVideo() {
 }
 
 std::optional<VideoFrame> MediaPipeline::takeVideoUpTo(double ptsSec, bool allowAhead) {
-    return frames_.popVideoUpTo(ptsSec, allowAhead);
+    auto v = frames_.popVideoUpTo(ptsSec, allowAhead);
+    // 记录真正交给渲染层的那一帧：逐帧步进以它的 PTS 为基准
+    if (v && v->valid) lastVideoPts_.store(v->ptsSec);
+    return v;
 }
 
 void MediaPipeline::registerAudioObserver(std::shared_ptr<AudioFrameObserver> obs) {

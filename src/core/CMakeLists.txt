@@ -7,6 +7,7 @@ add_library(vtcore STATIC
     src/PacketQueue.cpp
     src/FrameQueue.cpp
     src/PlayerState.cpp
+    src/MediaInfo.cpp
 )
 
 target_include_directories(vtcore PUBLIC include include/vtcore)
