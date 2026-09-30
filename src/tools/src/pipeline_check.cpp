@@ -108,18 +108,29 @@ int main(int argc, char** argv) {
     const double basePts = lastShown;
     std::printf("step: baseline pts=%.3f (fps=%.2f)\n", basePts, info.videoFrameRate);
 
-    // 步进一次并等「画面稳定」再取值。
+    // 步进一次并等「画面稳定」再取值；同时量出**画面变化所需时间**（用户感知延迟）。
+    //
     // 不能一看到变化就返回：后退要回关键帧重解，seek 后先解出来的是关键帧本身
     // （可能比目标早半秒），那一刻读到的是中间态而不是最终落点。
-    auto stepOnce = [&](int dir, double from, int budgetMs) -> double {
+    // 所以：用「首次变化」计时，用「稳定」取值。
+    auto stepOnce = [&](int dir, double from, int budgetMs, double& ms) -> double {
+        const auto t0 = std::chrono::steady_clock::now();
+        ms = -1.0;
         if (!p.stepFrame(dir)) return from;
         double last = pumpDisplay();
-        int stable = 0;
+        int  stable = 0;
+        bool changed = false;
         for (int k = 0; k < budgetMs / 20; ++k) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             const double v = pumpDisplay();
+            const bool moved = (dir > 0) ? (v > from + 1e-6) : (v < from - 1e-6);
+            if (moved && !changed) {
+                changed = true;
+                ms = std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - t0).count();
+            }
             if (std::abs(v - last) < 1e-6) {
-                if (++stable >= 8) break;      // 连续 8 拍(160ms)不再变化 -> 认为已稳定
+                if (++stable >= 8 && changed) break;   // 连续 8 拍不再变化 -> 已稳定
             } else {
                 stable = 0;
             }
@@ -129,22 +140,29 @@ int main(int argc, char** argv) {
     };
 
     int fwdOk = 0, backOk = 0;
+    double fwdMs = 0.0, backMs = 0.0;
     double prev = basePts;
     for (int i = 1; i <= 5; ++i) {
-        const double next = stepOnce(+1, prev, 600);
-        std::printf("  step +1 #%d -> pts=%.3f (delta=%+.4f)\n", i, next, next - prev);
-        if (next > prev + 1e-6) ++fwdOk;
+        double ms = -1.0;
+        const double next = stepOnce(+1, prev, 600, ms);
+        std::printf("  step +1 #%d -> pts=%.3f (delta=%+.4f, %6.0f ms)\n",
+                    i, next, next - prev, ms);
+        if (next > prev + 1e-6) { ++fwdOk; fwdMs += ms; }
         prev = next;
     }
     for (int i = 1; i <= 5; ++i) {
         // 后退要回关键帧重解，给足预算
-        const double next = stepOnce(-1, prev, 2000);
-        std::printf("  step -1 #%d -> pts=%.3f (delta=%+.4f)\n", i, next, next - prev);
-        if (next < prev - 1e-6) ++backOk;
+        double ms = -1.0;
+        const double next = stepOnce(-1, prev, 3000, ms);
+        std::printf("  step -1 #%d -> pts=%.3f (delta=%+.4f, %6.0f ms)\n",
+                    i, next, next - prev, ms);
+        if (next < prev - 1e-6) { ++backOk; backMs += ms; }
         prev = next;
     }
-    std::printf("step: forward %d/5 ok, backward %d/5 ok, returned to %.3f from %.3f\n",
-                fwdOk, backOk, prev, basePts);
+    std::printf("step: forward %d/5 ok (avg %.0f ms), backward %d/5 ok (avg %.0f ms), "
+                "returned to %.3f from %.3f\n",
+                fwdOk, fwdOk ? fwdMs / fwdOk : 0.0,
+                backOk, backOk ? backMs / backOk : 0.0, prev, basePts);
 
     p.close();
 
