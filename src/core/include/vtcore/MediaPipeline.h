@@ -133,6 +133,12 @@ private:
     /// 也不要原地不动——后者会让用户以为功能坏了。
     double frameInterval() const;
 
+    /// 记下「刚交给渲染层的那一帧」。两件事：
+    ///   1) 作为逐帧步进的基准（lastVideoPts_）
+    ///   2) 暂停时在帧队列上重设保留窗口基点——**只有渲染层知道用户正看着哪一帧**，
+    ///      所以这个决定放在取帧路径上，而不是让解码线程去猜（见 design.md D1）。
+    void noteDeliveredFrame(const VideoFrame& f);
+
 
 
     // FFmpeg 资源

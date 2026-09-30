@@ -121,6 +121,16 @@ int main(int argc, char** argv) {
     };
 
     p.pause();
+    // 可选静置：验证「暂停一段时间后保留窗口是否仍然有效」。
+    // 窗口基点是随取帧更新的状态，若它会被时间或超时兜底冲掉，静置后就会失效。
+    // 用法：VTPLAY_STEP_SETTLE_MS=30000
+    if (const char* s = std::getenv("VTPLAY_STEP_SETTLE_MS")) {
+        const int ms = std::atoi(s);
+        if (ms > 0) {
+            std::printf("step: settling %d ms before stepping...\n", ms);
+            std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        }
+    }
     for (int i = 0; i < 40 && lastShown < 0.0; ++i) {
         pumpDisplay();
         std::this_thread::sleep_for(std::chrono::milliseconds(20));

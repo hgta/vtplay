@@ -226,6 +226,8 @@ void MediaPipeline::flushAll() {
 void MediaPipeline::play() {
     if (status_.load() == PlayerStatus::Idle) return;
     clock_.resume();
+    // 恢复播放即撤销保留窗口：队列该按正常流速推进了
+    frames_.setKeepAfter(-1.0);
     setStatus(PlayerStatus::Playing);
 }
 
@@ -310,17 +312,23 @@ VideoFrame MediaPipeline::peekLatestVideo() {
     return frames_.peekLatestVideo();
 }
 
+void MediaPipeline::noteDeliveredFrame(const VideoFrame& f) {
+    lastVideoPts_.store(f.ptsSec);
+    // 暂停时把「用户正看着的这一帧」告知帧队列，它之后的几帧将被保护起来，
+    // 供逐帧前进直接取用；播放态撤销窗口（渲染层持续消费，队列自然流动）。
+    frames_.setKeepAfter(status_.load() == PlayerStatus::Paused ? f.ptsSec : -1.0);
+}
+
 std::optional<VideoFrame> MediaPipeline::takeVideoUpTo(double ptsSec, bool allowAhead) {
     // 逐帧前进预取的帧优先返回：它是确定的「下一帧」，不受时间容差影响
     if (pendingStepFrame_) {
         VideoFrame f = std::move(*pendingStepFrame_);
         pendingStepFrame_.reset();
-        lastVideoPts_.store(f.ptsSec);
+        noteDeliveredFrame(f);
         return f;
     }
     auto v = frames_.popVideoUpTo(ptsSec, allowAhead);
-    // 记录真正交给渲染层的那一帧：逐帧步进以它的 PTS 为基准
-    if (v && v->valid) lastVideoPts_.store(v->ptsSec);
+    if (v && v->valid) noteDeliveredFrame(*v);
     return v;
 }
 

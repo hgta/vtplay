@@ -1,7 +1,9 @@
 #include "FrameQueue.h"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <vector>
 
 namespace vtcore {
 
@@ -16,6 +18,51 @@ void FrameQueue::dropOldest(bool wantVideo) {
             return;
         }
     }
+}
+
+void FrameQueue::setKeepAfter(double pts) {
+    std::lock_guard<std::mutex> lk(mu_);
+    keepAfterPts_ = pts;
+}
+
+// 丢弃最旧的一个「可丢」视频帧。调用方须持有 mu_。
+//
+// 「可丢」= 不在保留窗口内。窗口 = 基点之后最近的 kKeepCount 帧：
+// 基点由渲染层给出（用户正看着的那一帧），窗口挡住的就是「紧接着要显示的那几帧」，
+// 逐帧前进直接从这里取，不必回关键帧重解。
+// 返回 false 表示当前没有可丢的帧（全都受保护）。
+bool FrameQueue::dropOldestDroppableLocked() {
+    if (keepAfterPts_ < 0.0) { dropOldest(true); return true; }
+
+    // 收集视频帧下标并按 PTS 升序（队列未排序，需自行排序）
+    std::vector<size_t> idx;
+    for (size_t i = 0; i < q_.size(); ++i) {
+        if (q_[i].isVideo) idx.push_back(i);
+    }
+    if (idx.empty()) return false;
+    std::sort(idx.begin(), idx.end(),
+              [this](size_t a, size_t b) { return q_[a].pts < q_[b].pts; });
+
+    // 基点之后的帧里，最近的 kKeepCount 个受保护
+    std::vector<size_t> protect;
+    for (size_t i : idx) {
+        if (q_[i].pts > keepAfterPts_) {
+            protect.push_back(i);
+            if (static_cast<int>(protect.size()) >= kKeepCount) break;
+        }
+    }
+
+    for (size_t i : idx) {
+        bool guarded = false;
+        for (size_t p : protect) {
+            if (p == i) { guarded = true; break; }
+        }
+        if (!guarded) {
+            q_.erase(q_.begin() + static_cast<long>(i));
+            return true;
+        }
+    }
+    return false;
 }
 
 // 视频帧：队列满时阻塞等待消费者（背压），而不是丢最旧。
@@ -37,7 +84,13 @@ void FrameQueue::pushVideo(VideoFrame f) {
         cv_.wait_for(lk, std::chrono::milliseconds(100),
                      [&]{ return aborted_ || videoCountLocked() < videoCapacity_; });
         if (aborted_) return;
-        if (videoCountLocked() >= videoCapacity_) dropOldest(true);
+        if (videoCountLocked() >= videoCapacity_) {
+            // 超时兜底：丢最旧的一个「可丢」帧。保留窗口内的帧不丢——它们正是
+            // 逐帧前进要用的「显示位置之后的那几帧」（见 setKeepAfter）。
+            // 若全都受保护，就不再丢、直接推入：容量可临时超出，
+            // 上界为 videoCapacity_ + kKeepCount。
+            dropOldestDroppableLocked();
+        }
         q_.push_back(std::move(n));
     }
     cv_.notify_all();

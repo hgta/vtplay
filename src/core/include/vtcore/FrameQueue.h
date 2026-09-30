@@ -48,6 +48,18 @@ public:
     /// PTS 大于 pts 的视频帧数量。解码背压据此判断「显示位置之后还缓存着几帧」。
     size_t videoCountAfter(double pts) const;
 
+    /// 设置「保留窗口」基点：**该 PTS 之后最近的 kKeepCount 个视频帧不可被丢弃**。
+    ///
+    /// 谁调用：渲染层——只有它知道「用户正看着哪一帧」。每取到一帧就更新一次；
+    /// 传负数表示撤销窗口（播放态不需要保护）。
+    ///
+    /// 为什么需要：pushVideo 在容量满时阻塞 100ms，超时后会丢最旧帧以保管线可推进。
+    /// 暂停时消费者停摆，于是每 100ms 丢一帧，把「显示位置之后的那几帧」逐个挤掉——
+    /// 逐帧前进因此只能回关键帧重解（实测每步 200~400ms）。
+    ///
+    /// 内存上界：容量 + kKeepCount（窗口内的帧全受保护时宁可临时超容量也不丢）。
+    void setKeepAfter(double pts);
+
     void clear();
     void abort();
 
@@ -59,6 +71,10 @@ public:
 private:
     /// 丢弃最旧的一个指定类型节点（溢出控制）。调用方须持有 mu_。
     void dropOldest(bool wantVideo);
+
+    /// 丢弃最旧的一个**可丢**视频帧（保留窗口内的不丢）；没有可丢的返回 false。
+    /// 调用方须持有 mu_。
+    bool dropOldestDroppableLocked();
     size_t videoCountLocked() const;
     size_t audioCountLocked() const;
 
@@ -79,6 +95,12 @@ private:
     /// 约 2 秒缓冲（96 帧 × 21ms）：太小会在解码抖动时造成欠载断音。
     size_t audioCapacity_ = 96;
     bool aborted_ = false;
+
+    /// 保留窗口（见 setKeepAfter）。基点为负表示窗口未启用。
+    double keepAfterPts_ = -1.0;
+    /// 窗口中保护的帧数。4 帧在 60fps 下约 67ms、30fps 下 133ms 的前瞻，
+    /// 足够覆盖手速的连续逐帧前进；再多只是徒增内存。
+    static constexpr int kKeepCount = 4;
 };
 
 } // namespace vtcore
