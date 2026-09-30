@@ -41,6 +41,13 @@ public:
     /// 不阻塞地获取最近一帧视频（用于暂停帧保持/拖拽预览降级）；无则无效帧。
     VideoFrame peekLatestVideo();
 
+    /// 取 PTS **严格大于** pts 的最早一帧视频（逐帧前进用：精确取「下一帧」）。
+    /// 不丢弃其它帧；没有时返回 nullopt。
+    std::optional<VideoFrame> popVideoAfter(double pts);
+
+    /// PTS 大于 pts 的视频帧数量。解码背压据此判断「显示位置之后还缓存着几帧」。
+    size_t videoCountAfter(double pts) const;
+
     void clear();
     void abort();
 

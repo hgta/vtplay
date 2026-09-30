@@ -88,6 +88,37 @@ std::optional<VideoFrame> FrameQueue::popVideoUpTo(double ptsSec, bool allowAhea
     return std::move(n.vf);
 }
 
+std::optional<VideoFrame> FrameQueue::popVideoAfter(double pts) {
+    std::unique_lock<std::mutex> lk(mu_);
+
+    // 视频队列未排序，需遍历找出 PTS 严格大于 pts 的最小者。
+    size_t best = q_.size();
+    double bestPts = 0.0;
+    for (size_t i = 0; i < q_.size(); ++i) {
+        if (!q_[i].isVideo) continue;
+        if (q_[i].pts > pts && (best == q_.size() || q_[i].pts < bestPts)) {
+            best = i;
+            bestPts = q_[i].pts;
+        }
+    }
+    if (best == q_.size()) return std::nullopt;
+
+    Node n = std::move(q_[best]);
+    q_.erase(q_.begin() + static_cast<long>(best));
+    lk.unlock();
+    cv_.notify_all();
+    return std::move(n.vf);
+}
+
+size_t FrameQueue::videoCountAfter(double pts) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    size_t n = 0;
+    for (const auto& node : q_) {
+        if (node.isVideo && node.pts > pts) ++n;
+    }
+    return n;
+}
+
 size_t FrameQueue::videoCountLocked() const {
     size_t n = 0;
     for (const auto& x : q_) if (x.isVideo) ++n;

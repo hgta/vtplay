@@ -133,7 +133,10 @@ int main(int argc, char** argv) {
     // 不能一看到变化就返回：后退要回关键帧重解，seek 后先解出来的是关键帧本身
     // （可能比目标早半秒），那一刻读到的是中间态而不是最终落点。
     // 所以：用「首次变化」计时，用「稳定」取值。
-    auto stepOnce = [&](int dir, double from, int budgetMs, double& ms) -> double {
+    // stablePolls：判定「已稳定」所需的连续无变化拍数。
+    // 后退要等 seek 后的帧分批到达，窗口太短会提前收工，
+    // 把上一步的残帧当成结果（表现为数字正负震荡）。
+    auto stepOnce = [&](int dir, double from, int budgetMs, double& ms, int stablePolls) -> double {
         const auto t0 = std::chrono::steady_clock::now();
         ms = -1.0;
         if (!p.stepFrame(dir)) return from;
@@ -150,7 +153,7 @@ int main(int argc, char** argv) {
                          std::chrono::steady_clock::now() - t0).count();
             }
             if (std::abs(v - last) < 1e-6) {
-                if (++stable >= 8 && changed) break;   // 连续 8 拍不再变化 -> 已稳定
+                if (++stable >= stablePolls && changed) break;
             } else {
                 stable = 0;
             }
@@ -164,7 +167,7 @@ int main(int argc, char** argv) {
     double prev = basePts;
     for (int i = 1; i <= 5; ++i) {
         double ms = -1.0;
-        const double next = stepOnce(+1, prev, 600, ms);
+        const double next = stepOnce(+1, prev, 600, ms, 8);
         std::printf("  step +1 #%d -> pts=%.3f (delta=%+.4f, %6.0f ms)\n",
                     i, next, next - prev, ms);
         if (next > prev + 1e-6) { ++fwdOk; fwdMs += ms; }
@@ -173,7 +176,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i <= 5; ++i) {
         // 后退要回关键帧重解，给足预算
         double ms = -1.0;
-        const double next = stepOnce(-1, prev, 3000, ms);
+        const double next = stepOnce(-1, prev, 3000, ms, 30);   // 后退给 600ms 稳定窗口
         std::printf("  step -1 #%d -> pts=%.3f (delta=%+.4f, %6.0f ms)\n",
                     i, next, next - prev, ms);
         if (next < prev - 1e-6) { ++backOk; backMs += ms; }

@@ -133,6 +133,8 @@ private:
     /// 也不要原地不动——后者会让用户以为功能坏了。
     double frameInterval() const;
 
+
+
     // FFmpeg 资源
     AVFormatContext* fmt_ = nullptr;
     AVCodecContext*  vdec_ = nullptr;
@@ -189,6 +191,12 @@ private:
     /// 最近一次交给渲染层的视频帧 PTS。逐帧步进以它为基准，而不是用时钟：
     /// 时钟可能停在两帧之间的任意位置，用它加减一帧会时而跳两帧、时而原地不动。
     std::atomic<double> lastVideoPts_{0.0};
+
+    /// 逐帧前进时预取的那一帧：渲染层下一次取帧优先返回它。
+    /// 直接给出确定的「下一帧」，不依赖渲染层的时间容差计算。
+    /// 注意：缓冲里不一定有下一帧（帧队列视频侧是「超容量丢最旧」，而解码在
+    /// 暂停时不停），取不到时 stepFrame 会退回 seek 重解。
+    std::optional<VideoFrame> pendingStepFrame_;
 };
 
 } // namespace vtcore

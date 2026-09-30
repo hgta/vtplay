@@ -137,6 +137,10 @@ void MediaPipeline::open(const std::string& url) {
     audioPackets_.reset();
     frames_.reset();
     demuxDone_.store(false);
+    // 逐帧状态必须随新媒体一起复位：否则上一次的显示位置会残留下来，
+    // 让步进的 seek 目标落在错误的时间点上。
+    lastVideoPts_.store(0.0);
+    pendingStepFrame_.reset();
 
     running_.store(true);
     auto* demuxer = new Demuxer(fmt_, bestV, bestA, videoPackets_, audioPackets_);
@@ -244,6 +248,8 @@ void MediaPipeline::seek(double sec) {
     clock_.setAudioPts(sec);
     // 丢弃已解码的旧帧，否则 seek 后仍会播出原位置的音视频（听起来位置错乱）。
     frames_.reset();
+    // 逐帧预取的帧属于旧位置，必须丢弃：否则 seek 后渲染层会把它当成新帧显示
+    pendingStepFrame_.reset();
     // 请求解封装线程清空包队列并定位；这里不阻塞、也不改变播放状态
     // （原实现在主线程 sleep 20ms 并强制置为 Paused，导致拖动进度条后播放停止）。
     if (demuxer_) demuxer_->requestSeek(sec);
@@ -253,6 +259,8 @@ double MediaPipeline::frameInterval() const {
     const double fps = info_.videoFrameRate;
     return (fps > 0.5 && fps < 1000.0) ? (1.0 / fps) : (1.0 / 25.0);
 }
+
+
 
 bool MediaPipeline::stepFrame(int direction) {
     if (status_.load() != PlayerStatus::Paused) return false;
@@ -264,14 +272,22 @@ bool MediaPipeline::stepFrame(int direction) {
     if (base <= 0.0) base = positionSec();
 
     if (direction > 0) {
-        // 前进同样走 seek，而不是「只把时钟推一格」。
+        // 前进优先走零成本路径：暂停时解码已被背压闸门挡住，紧跟显示位置的那几帧
+        // 一定还在缓冲里，直接把「下一帧」预取出来交给渲染层即可，下一拍就显示。
         //
-        // 后者看似零成本（解码线程在跑、队列像是有后续帧），但并不可靠：
-        // FrameQueue 的视频侧是「超出容量丢最旧」（见 videoCapacity_ 的说明），
-        // 而解码在暂停时并不停，已解码但还没显示的那几帧随时可能被丢掉。
-        // 自测里连续前进两步后就取不到帧了，正是这个原因。
-        // 回关键帧重解慢一点（几十~几百毫秒），但结果是确定的。
-        //
+        // 预取而不用「推时钟 + 让渲染层按容差取」，是因为后者要依赖容差计算，
+        // 帧落在边界上时会时而跳两帧、时而原地不动；预取给出的是确定的一帧。
+        if (auto next = frames_.popVideoAfter(base)) {
+            // 只在它确实是「紧邻的下一帧」时才走这条零成本路径。
+            // 帧队列的视频侧会丢最旧的帧，缓冲里可能存在跳帧，
+            // 此时预取会一步跨过好几帧——那就不叫逐帧了（实测会跳出 1~3 帧）。
+            if (next->ptsSec - base <= interval * 1.5) {
+                clock_.setAudioPts(next->ptsSec);
+                pendingStepFrame_ = std::move(*next);
+                return true;
+            }
+            // 有跳帧：丢弃这一帧退回重解（重解会重新产出它，不会丢内容）
+        }
         // 目标取 1.2 个帧间隔：稳稳包住下一帧，又不会越过下下帧（1.2 < 2）。
         seek(base + interval * 1.2);
     } else {
@@ -295,6 +311,13 @@ VideoFrame MediaPipeline::peekLatestVideo() {
 }
 
 std::optional<VideoFrame> MediaPipeline::takeVideoUpTo(double ptsSec, bool allowAhead) {
+    // 逐帧前进预取的帧优先返回：它是确定的「下一帧」，不受时间容差影响
+    if (pendingStepFrame_) {
+        VideoFrame f = std::move(*pendingStepFrame_);
+        pendingStepFrame_.reset();
+        lastVideoPts_.store(f.ptsSec);
+        return f;
+    }
     auto v = frames_.popVideoUpTo(ptsSec, allowAhead);
     // 记录真正交给渲染层的那一帧：逐帧步进以它的 PTS 为基准
     if (v && v->valid) lastVideoPts_.store(v->ptsSec);
