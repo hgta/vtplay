@@ -170,6 +170,39 @@ vtplay-export-check <file> wechat-share                      # 真实导出并�
 vtplay-export-check <file> wechat-share --cancel-after 4     # 验证取消后无残留
 ```
 
+## 发布（Windows 便携版）
+
+版本号的唯一来源是 `CMakeLists.txt` 里的 `project(vtplay VERSION x.y.z)`——
+它同时注入到程序内（关于页显示）与 exe 的版本资源，打包脚本也从这里读，不另设一处。
+
+```powershell
+# 1. 构建
+powershell -File D:\dev\msys64\build_and_verify.ps1
+
+# 2. 打包（会自动算依赖闭包、写 qt.conf、附带 ffmpeg）
+powershell -File tools\release\make_release.ps1 -QtBin D:\dev\msys64\mingw64\bin
+
+# 3. 验证便携包真的能独立运行（必须做，见下）
+powershell -File tools\release\verify_package.ps1 -Media <一个测试视频>
+```
+
+产物在 `dist\vtplay-<版本>-win64.zip`。
+
+**为什么打包不是「拷个 exe」**（每一步都对应一个真实踩过的坑）：
+
+| 步骤 | 不做会怎样 |
+|---|---|
+| `windeployqt --qmldir` | exe 依赖 13 个 DLL，别人拿到直接跑不起来 |
+| `--compiler-runtime` + 兜底复制 | 缺 `libstdc++-6` / `libgcc_s_seh-1` / `libwinpthread-1`，双击无反应 |
+| 写 `qt.conf` | QML 导入路径指向编译期前缀，换机器报 `module "QtQuick.Controls.Basic" is not installed` |
+| 依赖闭包收集 | `windeployqt` 不追**传递**依赖。缺 `zlib1`/`pcre2`/`icu`/`harfbuzz` 以及 FFmpeg 那串编解码库时，加载器在 `main()` 之前就失败——**连日志都不会产生** |
+| 随包 `ffmpeg.exe` | 导出功能需要用户自己装 ffmpeg |
+
+**验证判据不是「进程还活着」**：缺 DLL 或缺 QML 模块时，程序可能弹个错误对话框干等，
+进程照样存活却一行日志都不写。所以判据是两条硬证据——日志里出现启动行，
+且 stderr 里出现 `[audio] t=... status=Playing`（证明解码与音频输出真的跑起来了）。
+验证时还会把 `PATH` 剥到只剩 `System32`，否则在开发机上永远测不出缺 DLL。
+
 ## 路线图
 
 | 版本 | 内容 |
