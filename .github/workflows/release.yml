@@ -1,0 +1,180 @@
+# 推送 v* 标签即自动发布：构建 → 打包便携版 → 创建 Release 并上传 zip。
+#
+# 为什么放在 Actions 里而不是本地跑命令：创建 Release 与上传资产都需要
+# 写权限的凭据。Actions 由 GitHub 自己提供 GITHUB_TOKEN（见下方 permissions），
+# 因此发布不需要任何人持有 PAT，也不用手工上传压缩包。
+#
+# 发布流程：
+#   1. 改 CMakeLists.txt 里的版本号并提交
+#   2. 在 CHANGELOG.md 顶部补上该版本的段落（会被抽出来当 Release 说明）
+#   3. git tag -a v0.2.1 -m "..." && git push origin v0.2.1
+#   CI 会校验「tag 与 CMakeLists 版本一致」，不一致直接失败——避免发布出
+#   名为 0.2.1 实际是 0.2.0 的包。
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（例如 v0.2.0）'
+        required: true
+
+permissions:
+  contents: write        # 创建 Release + 上传资产所必需
+
+jobs:
+  windows-portable:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 校验版本号一致
+        shell: pwsh
+        env:
+          # tag 触发时用 ref_name；手工触发时用输入值
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          # 单行写完整正则匹配，不用反引号续行——续行后的尾随空格在 YAML 块里
+          # 很容易被忽略却让 PowerShell 语法失败
+          $pat = 'project\(\s*\w+\s+VERSION\s+([0-9.]+)'
+          $declared = (Select-String -Path CMakeLists.txt -Pattern $pat).Matches[0].Groups[1].Value
+          $tag = $env:RELEASE_TAG -replace '^v', ''
+          Write-Output "CMakeLists: $declared   tag: $env:RELEASE_TAG"
+          if ($declared -ne $tag) {
+            Write-Output "!!! 版本不一致：CMakeLists 是 $declared，tag 是 $tag"
+            exit 1
+          }
+          "VTPLAY_VERSION=$declared" >> $env:GITHUB_ENV
+          "RELEASE_TAG=$env:RELEASE_TAG" >> $env:GITHUB_ENV
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-declarative
+            mingw-w64-x86_64-qt6-multimedia
+            mingw-w64-x86_64-qt6-multimedia-ffmpeg
+            mingw-w64-x86_64-ffmpeg
+
+      # 依赖里装 binutils 是给打包脚本用的：它靠 objdump 解析导入表来算依赖闭包
+      - name: 构建
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: 打包便携版
+        shell: pwsh
+        run: pwsh -File tools/release/make_release.ps1 -QtBin C:\msys64\mingw64\bin
+
+      # 这一条是必须过的：依赖闭包不全时，程序会在 main() 之前加载失败，
+      # 连日志都不产生（本地打包时实际踩过，缺了 66 个 DLL）。这里把它变成门禁。
+      - name: 校验依赖闭包完整
+        shell: pwsh
+        run: |
+          $dir = "dist/vtplay-$env:VTPLAY_VERSION-win64"
+          if (-not (Test-Path $dir)) { Write-Output "missing $dir"; exit 1 }
+          $objdump = 'C:\msys64\mingw64\bin\objdump.exe'
+          $sys = Join-Path $env:WINDIR 'System32'
+          $missing = @{}
+          foreach ($b in (Get-ChildItem $dir -Recurse -Include '*.exe','*.dll' -File)) {
+            foreach ($line in (& $objdump -p $b.FullName 2>$null)) {
+              if ($line -notmatch 'DLL Name:\s*(\S+)') { continue }
+              $imp = $Matches[1].Trim()
+              # api-ms-win-* 是 Windows 的 API set 虚拟 DLL，不是磁盘文件，跳过
+              if ($imp -like 'api-ms-win-*') { continue }
+              if (Test-Path (Join-Path $dir $imp)) { continue }
+              if (Test-Path (Join-Path $sys $imp)) { continue }
+              $missing[$imp] = $b.Name
+            }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Output "!!! 缺失依赖 $($missing.Count) 个："
+            foreach ($k in ($missing.Keys | Sort-Object)) { Write-Output "    $k  (needed by $($missing[$k]))" }
+            exit 1
+          }
+          Write-Output '依赖闭包完整'
+
+      - name: 关键文件在位
+        shell: pwsh
+        run: |
+          $dir = "dist/vtplay-$env:VTPLAY_VERSION-win64"
+          # qt.conf 是 QML 模块能被找到的前提；缺它换台机器就报
+          # module "QtQuick.Controls.Basic" is not installed
+          foreach ($f in @('vtplay.exe','qt.conf','ffmpeg.exe',
+                           'platforms\qwindows.dll','qml\QtQuick\Controls')) {
+            if (-not (Test-Path (Join-Path $dir $f))) { Write-Output "!!! missing $f"; exit 1 }
+          }
+          Write-Output '关键文件齐全'
+
+      # 冒烟测试：offscreen 平台下启动，只要求写出启动日志。
+      # continue-on-error —— 运行器上没有真实音频设备，播放起不来属环境限制，
+      # 不应因此阻断发布（完整的播放验证在本地做，见 tools/release/verify_package.ps1）。
+      - name: 冒烟测试（无界面启动）
+        shell: pwsh
+        continue-on-error: true
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $dir = "dist/vtplay-$env:VTPLAY_VERSION-win64"
+          $log = Join-Path $env:LOCALAPPDATA 'VTPlay\VTPlay\vtplay.log'
+          if (Test-Path $log) { Remove-Item $log -Force }
+          $p = Start-Process -FilePath (Join-Path $dir 'vtplay.exe') -PassThru `
+                -WorkingDirectory $dir -RedirectStandardError (Join-Path $env:TEMP 'smoke.err')
+          Start-Sleep -Seconds 15
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          if (Test-Path $log) {
+            Get-Content $log -Encoding UTF8 | Select-Object -First 12 | ForEach-Object { Write-Output $_ }
+            if (@(Get-Content $log -Encoding UTF8 | Select-String '\[settings\] transcoder path=').Count -gt 0) {
+              Write-Output 'SMOKE OK'
+            } else { Write-Output 'SMOKE: 无启动行' }
+          } else { Write-Output 'SMOKE: 没有产生日志' }
+
+      # Release 说明直接取自 CHANGELOG.md 里该版本的段落——保持单一来源，
+      # 免得「CHANGELOG 写了但 Release 说明是另一份」。
+      - name: 抽取 Release 说明
+        shell: pwsh
+        run: |
+          $md = Get-Content CHANGELOG.md -Raw -Encoding UTF8
+          $pat = "(?ms)^##\s*\[$([regex]::Escape($env:VTPLAY_VERSION))\][^\n]*\n(.*?)(?=^##\s*\[|\z)"
+          $m = [regex]::Match($md, $pat)
+          $body = if ($m.Success) { $m.Groups[1].Value.Trim() }
+                  else { "见仓库 CHANGELOG.md 的 $env:VTPLAY_VERSION 段落。" }
+          # 用数组拼接而不是 here-string：@"..."@ 在 YAML 块里的缩进很容易踩坑
+          $head = @(
+            'Windows 64 位便携版，解压后双击 `vtplay.exe` 即可，无需安装。',
+            '',
+            '发布包已通过依赖闭包校验；完整验证方式见 `tools/release/verify_package.ps1`。',
+            '',
+            '---',
+            ''
+          )
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          (($head + @($body)) -join "`n") | Set-Content -Path dist/release-body.md -Encoding UTF8
+          Write-Output '--- release body (前 8 行) ---'
+          Get-Content dist/release-body.md -Encoding UTF8 | Select-Object -First 8
+
+      # 发布包已在 dist/ 里打好，这里只做「创建 Release + 上传」
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: VTPlay ${{ env.VTPLAY_VERSION }}
+          body_path: dist/release-body.md
+          files: dist/vtplay-*-win64.zip
+          draft: false
+          prerelease: false
