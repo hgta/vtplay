@@ -79,7 +79,14 @@ jobs:
 
       - name: 打包便携版
         shell: pwsh
-        run: pwsh -File tools/release/make_release.ps1 -QtBin C:\msys64\mingw64\bin
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          # 输出同时写进 dist\package.log：失败时由后面的诊断步骤推到分支，
+          # 便于在拿不到 Actions 日志的环境里排查（下载日志需要鉴权）
+          & pwsh -NoProfile -File tools/release/make_release.ps1 -QtBin C:\msys64 `
+              *>&1 | Tee-Object -FilePath dist\package.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { Write-Output "make_release 失败，退出码 $code"; exit 1 }
 
       # 这一条是必须过的：依赖闭包不全时，程序会在 main() 之前加载失败，
       # 连日志都不产生（本地打包时实际踩过，缺了 66 个 DLL）。这里把它变成门禁。
@@ -167,6 +174,30 @@ jobs:
           (($head + @($body)) -join "`n") | Set-Content -Path dist/release-body.md -Encoding UTF8
           Write-Output '--- release body (前 8 行) ---'
           Get-Content dist/release-body.md -Encoding UTF8 | Select-Object -First 8
+
+      # 临时排查用：失败时把打包日志推到 ci-diagnostics 分支。
+      # 起因是「本地过、CI 挂」但拿不到 Actions 日志（下载日志需鉴权，403），
+      # 而分支内容可以匿名读取。排查完这段应删除。
+      - name: 失败诊断（临时）
+        if: failure()
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B ci-diagnostics
+          $listing = @()
+          $listing += "pwsh $($PSVersionTable.PSVersion)  platform=$($PSVersionTable.Platform)"
+          $listing += "QtBin=C:\msys64\mingw64\bin  exists=$(Test-Path 'C:\msys64\mingw64\bin\windeployqt.exe')"
+          if (Test-Path dist) {
+            $listing += (Get-ChildItem dist -Force | ForEach-Object { "  $($_.Name)  $($_.Length)" })
+          } else { $listing += '  (dist 不存在)' }
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $listing | Out-File -FilePath dist\listing.txt -Encoding UTF8
+          $files = @('dist/listing.txt')
+          if (Test-Path dist/package.log) { $files += 'dist/package.log' }
+          git add -f $files
+          git commit -m 'ci diagnostics (temporary)' --allow-empty
+          git push -f origin ci-diagnostics
 
       # 发布包已在 dist/ 里打好，这里只做「创建 Release + 上传」
       - name: 创建 Release

@@ -29,6 +29,14 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# 关闭「原生命令的非零退出/ stderr 触发终止性错误」。
+# PowerShell 7 的行为与 5.1 不同：windeployqt 会往 stderr 打 Warning
+# （翻译缺失、dxcompiler 缺失——都是无害的），在 7.x 下可能被当成错误直接中断
+# 整个脚本。CI 上跑的正是 pwsh 7，本地是 5.1——这个差异会让「本地过、CI 挂」。
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
+
 # $PSScriptRoot 在某些宿主里是空的（例如脚本被外层脚本再包一层执行时），
 # 所以按「脚本目录 -> $MyInvocation -> 当前目录」逐级兜底。
 if (-not $RepoRoot) {
@@ -36,7 +44,20 @@ if (-not $RepoRoot) {
     if (-not $here) { $here = (Get-Location).Path }
     $RepoRoot = (Resolve-Path (Join-Path $here '..\..')).Path
 }
+
+# -QtBin 允许给 MSYS2 根目录（C:\msys64）或直接给 bin 目录；两者都接受，
+# 免得 CI 与本地写法不同就直接失败。
+if (Test-Path (Join-Path $QtBin 'mingw64\bin')) { $QtBin = Join-Path $QtBin 'mingw64\bin' }
+if (-not (Test-Path $QtBin)) { throw "QtBin not found: $QtBin" }
+$QtBin = (Resolve-Path $QtBin).Path
 $env:PATH = "$QtBin;" + $env:PATH
+
+# 前置检查：缺哪个直接说清楚，而不是等到中途报一句难懂的错
+foreach ($tool in 'windeployqt.exe', 'objdump.exe', 'ffmpeg.exe') {
+    if (-not (Test-Path (Join-Path $QtBin $tool))) {
+        throw "missing $tool in $QtBin（MSYS2 下需 mingw-w64-x86_64-qt6-base / -binutils / -ffmpeg）"
+    }
+}
 
 function Info($m) { Write-Output ("[release] " + $m) }
 
@@ -109,7 +130,17 @@ if (Test-Path $readme) {
 
 $zip = Join-Path $dist "vtplay-$version-win64.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
-Compress-Archive -Path (Join-Path $dest '*') -DestinationPath $zip -CompressionLevel Optimal
+# 优先用 Windows 自带的 bsdtar：比 Compress-Archive 快得多，且 1500+ 文件时
+# 更不容易出问题（Compress-Archive 在大文件集上有已知的性能与内存问题）。
+$tar = Join-Path $env:WINDIR 'System32\tar.exe'
+if (Test-Path $tar) {
+    & $tar -a -c -f $zip -C $dest .
+    if ($LASTEXITCODE -ne 0) { throw "tar 打包失败，退出码 $LASTEXITCODE" }
+} else {
+    Info 'tar.exe 不可用，回退 Compress-Archive'
+    Compress-Archive -Path (Join-Path $dest '*') -DestinationPath $zip -CompressionLevel Optimal
+}
+if (-not (Test-Path $zip)) { throw "zip 未生成: $zip" }
 $sizeMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
 Info "zip: $zip ($sizeMb MB)"
 Info "done. 发布前请先跑 tools\release\verify_package.ps1"
