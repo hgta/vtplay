@@ -77,34 +77,44 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build
 
-      # 不要硬编码 MSYS2 安装路径：第一次就栽在 C:\msys64 在 runner 上不存在。
-      # 从 PATH 上的 bash 反推根目录最可靠（setup-msys2 会把它加进 PATH）。
-      - name: 定位 MSYS2
+      # 不要硬编码 MSYS2 路径，也不要从 `Get-Command bash` 反推——runner 上 PATH 里
+      # 先命中的是 Git 自带的 bash（C:\Program Files\Git\bin\bash.exe），据此算出来的
+      # 根目录是 C:\Program Files\Git，当然找不到 windeployqt。
+      # 就在 MSYS2 shell 里用 cygpath 问它自己，结果写文件、再由 pwsh 读。
+      - name: 定位 MSYS2 + 环境诊断
+        run: |
+          {
+            echo "MSYSTEM=$MSYSTEM"
+            echo "--- which ---"
+            which windeployqt.exe 2>&1 || echo "(windeployqt 不在 PATH)"
+            which objdump.exe 2>&1 || echo "(objdump 不在 PATH)"
+            which ffmpeg.exe 2>&1 || echo "(ffmpeg 不在 PATH)"
+            echo "--- 包是否装上 ---"
+            pacman -Q mingw-w64-x86_64-qt6-base mingw-w64-x86_64-qt6-declarative \
+                       mingw-w64-x86_64-ffmpeg mingw-w64-x86_64-binutils 2>&1
+            echo "--- /mingw64/bin/windeployqt* ---"
+            ls -l /mingw64/bin/windeployqt* 2>&1
+            echo "--- cygpath /mingw64/bin ---"
+            cygpath -w /mingw64/bin 2>&1
+            echo "--- cygpath /mingw64 ---"
+            cygpath -w /mingw64 2>&1
+          } > ci-diag.txt 2>&1
+          cat ci-diag.txt
+          cygpath -w /mingw64/bin > mingw_bin.txt
+          echo "MINGW_BIN = $(cat mingw_bin.txt)"
+
+      - name: 读取 MSYS2 路径
         shell: pwsh
         run: |
-          $cands = @()
-          if ($env:MSYS2_ROOT) { $cands += $env:MSYS2_ROOT }
-          $bash = (Get-Command bash -ErrorAction SilentlyContinue).Source
-          if ($bash) { $cands += (Split-Path -Parent (Split-Path -Parent $bash)) }
-          $cands += 'C:\msys64', 'D:\msys64', 'C:\tools\msys64'
-          $cands = $cands | Where-Object { $_ } | Select-Object -Unique
-
-          $root = $cands | Where-Object {
-            Test-Path (Join-Path $_ 'mingw64\bin\windeployqt.exe') } | Select-Object -First 1
-          if (-not $root) {
-            Write-Output "候选根目录：$($cands -join ' | ')"
-            foreach ($c in $cands) {
-              if (Test-Path $c) {
-                Write-Output "  $c 下的目录："
-                Get-ChildItem $c -Directory -ErrorAction SilentlyContinue |
-                  Select-Object -First 10 -ExpandProperty Name | ForEach-Object { Write-Output "     $_" }
-              }
-            }
-            Write-Output '!!! 未找到含 windeployqt 的 MSYS2 根目录'
+          $p = (Get-Content mingw_bin.txt -Raw).Trim()
+          Write-Output "MINGW_BIN=$p"
+          if (-not (Test-Path (Join-Path $p 'windeployqt.exe'))) {
+            Write-Output '!!! 该目录下没有 windeployqt.exe'
+            Write-Output '--- ci-diag.txt ---'
+            if (Test-Path ci-diag.txt) { Get-Content ci-diag.txt | ForEach-Object { Write-Output $_ } }
             exit 1
           }
-          Write-Output "MSYS2 root = $root"
-          "MINGW_BIN=$root\mingw64\bin" >> $env:GITHUB_ENV
+          "MINGW_BIN=$p" >> $env:GITHUB_ENV
 
       - name: 打包便携版
         shell: pwsh
@@ -238,6 +248,7 @@ jobs:
           $listing | Out-File -FilePath dist\listing.txt -Encoding UTF8
           $files = @('dist/listing.txt')
           if (Test-Path dist/package.log) { $files += 'dist/package.log' }
+          if (Test-Path ci-diag.txt) { $files += 'ci-diag.txt' }
           git add -f $files
           git commit -m 'ci diagnostics (temporary)' --allow-empty
           git push -f origin ci-diagnostics
