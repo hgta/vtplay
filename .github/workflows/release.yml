@@ -77,13 +77,42 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build
 
+      # 不要硬编码 MSYS2 安装路径：第一次就栽在 C:\msys64 在 runner 上不存在。
+      # 从 PATH 上的 bash 反推根目录最可靠（setup-msys2 会把它加进 PATH）。
+      - name: 定位 MSYS2
+        shell: pwsh
+        run: |
+          $cands = @()
+          if ($env:MSYS2_ROOT) { $cands += $env:MSYS2_ROOT }
+          $bash = (Get-Command bash -ErrorAction SilentlyContinue).Source
+          if ($bash) { $cands += (Split-Path -Parent (Split-Path -Parent $bash)) }
+          $cands += 'C:\msys64', 'D:\msys64', 'C:\tools\msys64'
+          $cands = $cands | Where-Object { $_ } | Select-Object -Unique
+
+          $root = $cands | Where-Object {
+            Test-Path (Join-Path $_ 'mingw64\bin\windeployqt.exe') } | Select-Object -First 1
+          if (-not $root) {
+            Write-Output "候选根目录：$($cands -join ' | ')"
+            foreach ($c in $cands) {
+              if (Test-Path $c) {
+                Write-Output "  $c 下的目录："
+                Get-ChildItem $c -Directory -ErrorAction SilentlyContinue |
+                  Select-Object -First 10 -ExpandProperty Name | ForEach-Object { Write-Output "     $_" }
+              }
+            }
+            Write-Output '!!! 未找到含 windeployqt 的 MSYS2 根目录'
+            exit 1
+          }
+          Write-Output "MSYS2 root = $root"
+          "MINGW_BIN=$root\mingw64\bin" >> $env:GITHUB_ENV
+
       - name: 打包便携版
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           # 输出同时写进 dist\package.log：失败时由后面的诊断步骤推到分支，
           # 便于在拿不到 Actions 日志的环境里排查（下载日志需要鉴权）
-          & pwsh -NoProfile -File tools/release/make_release.ps1 -QtBin C:\msys64 `
+          & pwsh -NoProfile -File tools/release/make_release.ps1 -QtBin $env:MINGW_BIN `
               *>&1 | Tee-Object -FilePath dist\package.log
           $code = $LASTEXITCODE
           if ($code -ne 0) { Write-Output "make_release 失败，退出码 $code"; exit 1 }
@@ -95,7 +124,7 @@ jobs:
         run: |
           $dir = "dist/vtplay-$env:VTPLAY_VERSION-win64"
           if (-not (Test-Path $dir)) { Write-Output "missing $dir"; exit 1 }
-          $objdump = 'C:\msys64\mingw64\bin\objdump.exe'
+          $objdump = Join-Path $env:MINGW_BIN 'objdump.exe'
           $sys = Join-Path $env:WINDIR 'System32'
           $missing = @{}
           foreach ($b in (Get-ChildItem $dir -Recurse -Include '*.exe','*.dll' -File)) {
@@ -187,7 +216,21 @@ jobs:
           git checkout -B ci-diagnostics
           $listing = @()
           $listing += "pwsh $($PSVersionTable.PSVersion)  platform=$($PSVersionTable.Platform)"
-          $listing += "QtBin=C:\msys64\mingw64\bin  exists=$(Test-Path 'C:\msys64\mingw64\bin\windeployqt.exe')"
+          $listing += "MINGW_BIN=$env:MINGW_BIN"
+          $listing += "bash = $((Get-Command bash -ErrorAction SilentlyContinue).Source)"
+          $listing += 'PATH 中与 msys/mingw 相关的项：'
+          $listing += ($env:PATH -split ';' | Where-Object { $_ -match 'msys|mingw' } | ForEach-Object { "  $_" })
+          foreach ($c in @('C:\msys64', 'D:\msys64', 'C:\tools\msys64')) {
+            $listing += "$c 存在=$(Test-Path $c)"
+            if (Test-Path $c) {
+              $listing += (Get-ChildItem $c -Directory -ErrorAction SilentlyContinue |
+                           Select-Object -First 10 | ForEach-Object { "    $($_.Name)" })
+              foreach ($sub in 'mingw64\bin', 'ucrt64\bin', 'clang64\bin') {
+                $p = Join-Path $c "$sub\windeployqt.exe"
+                if (Test-Path $p) { $listing += "    找到: $p" }
+              }
+            }
+          }
           if (Test-Path dist) {
             $listing += (Get-ChildItem dist -Force | ForEach-Object { "  $($_.Name)  $($_.Length)" })
           } else { $listing += '  (dist 不存在)' }
