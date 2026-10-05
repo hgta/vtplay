@@ -173,13 +173,38 @@ vtplay-export-check <file> wechat-share --cancel-after 4     # 验证取消后�
 ## 发布（Windows 便携版）
 
 版本号的唯一来源是 `CMakeLists.txt` 里的 `project(vtplay VERSION x.y.z)`——
-它同时注入到程序内（关于页显示）与 exe 的版本资源，打包脚本也从这里读，不另设一处。
+它同时注入到程序内（关于页显示）与 exe 的版本资源，打包脚本、CI 也从这里读，不另设一处。
+
+### 发一个新版本
+
+```bash
+# 1. 改 CMakeLists.txt 的版本号，并在 CHANGELOG.md 顶部补上该版本段落
+#    （Release 说明就是从这段抽出来的，保持单一来源）
+# 2. 提交后打标签推送
+git tag -a v0.2.1 -m "VTPlay 0.2.1"
+git push origin v0.2.1
+```
+
+推送 tag 后 `.github/workflows/release.yml` 会自动：安装 MSYS2 依赖 → 构建 →
+打包便携版 → 校验依赖闭包 → **创建 Release 并上传 zip**。
+
+不需要手工上传压缩包，也不需要在本地或 CI 里配置任何 PAT —— 创建 Release 用的是
+Actions 自带的 `GITHUB_TOKEN`（工作流里声明了 `permissions: contents: write`）。
+
+工作流有两条门禁，不过就不发布：
+
+- **tag 与 `CMakeLists.txt` 的版本号必须一致** —— 防止发布出标签写 0.2.1、
+  内容其实是 0.2.0 的包
+- **依赖闭包必须完整** —— 缺 DLL 时程序在 `main()` 之前就失败、连日志都不产生，
+  这类问题必须在发布前拦住（本地打包时实际踩过，缺了 66 个）
+
+### 本地打包（离线/排查用）
 
 ```powershell
 # 1. 构建
 powershell -File D:\dev\msys64\build_and_verify.ps1
 
-# 2. 打包（会自动算依赖闭包、写 qt.conf、附带 ffmpeg）
+# 2. 打包（与 CI 用的是同一个脚本）
 powershell -File tools\release\make_release.ps1 -QtBin D:\dev\msys64\mingw64\bin
 
 # 3. 验证便携包真的能独立运行（必须做，见下）
