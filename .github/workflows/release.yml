@@ -119,13 +119,16 @@ jobs:
       - name: 打包便携版
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          # 输出同时写进 dist\package.log：失败时由后面的诊断步骤推到分支，
-          # 便于在拿不到 Actions 日志的环境里排查（下载日志需要鉴权）
-          & pwsh -NoProfile -File tools/release/make_release.ps1 -QtBin $env:MINGW_BIN `
-              *>&1 | Tee-Object -FilePath dist\package.log
-          $code = $LASTEXITCODE
-          if ($code -ne 0) { Write-Output "make_release 失败，退出码 $code"; exit 1 }
+          # -QtBin 用上一步探测出来的路径。注意 make_release.ps1 也接受 MSYS2 根目录。
+          #
+          # 排查技巧：Actions 日志的下载接口需要鉴权（匿名取会 403）。若在没有凭据的
+          # 环境里需要看日志，可临时加一步 `if: failure()`，把关键输出 tee 到文件后
+          # git push 到一个临时分支——分支内容可以匿名读取。
+          & pwsh -NoProfile -File tools/release/make_release.ps1 -QtBin $env:MINGW_BIN *>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "make_release 失败，退出码 $LASTEXITCODE"
+            exit 1
+          }
 
       # 这一条是必须过的：依赖闭包不全时，程序会在 main() 之前加载失败，
       # 连日志都不产生（本地打包时实际踩过，缺了 66 个 DLL）。这里把它变成门禁。
@@ -213,45 +216,6 @@ jobs:
           (($head + @($body)) -join "`n") | Set-Content -Path dist/release-body.md -Encoding UTF8
           Write-Output '--- release body (前 8 行) ---'
           Get-Content dist/release-body.md -Encoding UTF8 | Select-Object -First 8
-
-      # 临时排查用：失败时把打包日志推到 ci-diagnostics 分支。
-      # 起因是「本地过、CI 挂」但拿不到 Actions 日志（下载日志需鉴权，403），
-      # 而分支内容可以匿名读取。排查完这段应删除。
-      - name: 失败诊断（临时）
-        if: failure()
-        shell: pwsh
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git checkout -B ci-diagnostics
-          $listing = @()
-          $listing += "pwsh $($PSVersionTable.PSVersion)  platform=$($PSVersionTable.Platform)"
-          $listing += "MINGW_BIN=$env:MINGW_BIN"
-          $listing += "bash = $((Get-Command bash -ErrorAction SilentlyContinue).Source)"
-          $listing += 'PATH 中与 msys/mingw 相关的项：'
-          $listing += ($env:PATH -split ';' | Where-Object { $_ -match 'msys|mingw' } | ForEach-Object { "  $_" })
-          foreach ($c in @('C:\msys64', 'D:\msys64', 'C:\tools\msys64')) {
-            $listing += "$c 存在=$(Test-Path $c)"
-            if (Test-Path $c) {
-              $listing += (Get-ChildItem $c -Directory -ErrorAction SilentlyContinue |
-                           Select-Object -First 10 | ForEach-Object { "    $($_.Name)" })
-              foreach ($sub in 'mingw64\bin', 'ucrt64\bin', 'clang64\bin') {
-                $p = Join-Path $c "$sub\windeployqt.exe"
-                if (Test-Path $p) { $listing += "    找到: $p" }
-              }
-            }
-          }
-          if (Test-Path dist) {
-            $listing += (Get-ChildItem dist -Force | ForEach-Object { "  $($_.Name)  $($_.Length)" })
-          } else { $listing += '  (dist 不存在)' }
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          $listing | Out-File -FilePath dist\listing.txt -Encoding UTF8
-          $files = @('dist/listing.txt')
-          if (Test-Path dist/package.log) { $files += 'dist/package.log' }
-          if (Test-Path ci-diag.txt) { $files += 'ci-diag.txt' }
-          git add -f $files
-          git commit -m 'ci diagnostics (temporary)' --allow-empty
-          git push -f origin ci-diagnostics
 
       # 发布包已在 dist/ 里打好，这里只做「创建 Release + 上传」
       - name: 创建 Release
