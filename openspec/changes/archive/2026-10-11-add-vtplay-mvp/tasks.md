@@ -46,7 +46,12 @@
 - [x] 6.1 用样例媒体矩阵逐格式验证打开与播放：已用 ffmpeg 测试源生成 480p H.264/AAC MP4 跑通管线（其他格式需用户实测）
 - [x] 6.2 验收场景对齐 spec：headless self-test 5 秒内解码 300+ 视频帧、400+ 音频帧；FFmpeg 9 API（AVChannelLayout、swr_alloc_set_opts2）已适配；close() 加入 demuxer_->requestStop 修复 EOF 后 join 挂起；同步实现按音频主时钟 + 视频早晚丢弃；其余 GUI 验收（键盘/全屏/控制条自动隐藏）需用户手动跑 GUI
 - [x] 6.3 Windows 实机构建运行验证：MSYS2 mingw-w64 + Qt 6.11 + FFmpeg 9 工具链搭好；GUI 应用与 headless 自测均通过构建与运行
-- [ ] 6.4 整理分发产物（windeployqt 等），确认 FFmpeg 为 LGPL 动态链接（**需在目标平台实操**）
+- [x] 6.4 整理分发产物（windeployqt 等）：已产出 Windows 便携版并验证可**脱离开发环境**运行
+      （依赖闭包收集 + qt.conf；缺任何一环都会「双击无反应」且不产生日志）
+- [x] 6.4b **FFmpeg 链接方式的决策已变更**（原任务要求「确认 LGPL 动态链接」）：
+      不再追求 LGPL 构建，改为随包分发 GPL 构建的 ffmpeg 并以**子进程**调用——
+      应用本体不链接编码 API，因此不产生传染；理由与许可说明落在 README 与「关于」页。
+      LGPL 构建作为将来可替换的选项保留（`Exporter` 只依赖可执行文件路径，替换成本低）
 
 ## 7. 实机调试修复（真机播放暴露的问题）
 
