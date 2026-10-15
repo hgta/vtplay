@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 # 版本号单一来源：注入为 VTPLAY_VERSION 宏与 Windows 资源版本信息
-project(vtplay VERSION 0.2.0 LANGUAGES CXX)
+project(vtplay VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
