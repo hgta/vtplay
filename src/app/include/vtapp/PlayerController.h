@@ -9,7 +9,9 @@
 #include <QVariantMap>
 #include <memory>
 
-#include "Exporter.h"   // 导出预设与转码器信息为值类型，需完整定义
+#include "Exporter.h"        // 导出预设与转码器信息为值类型，需完整定义
+#include "FilmDiagnosis.h"   // 源诊断结论为值类型
+#include "RestoreRunner.h"   // 修复导出的执行器（阶段清单 -> 一次滤镜链主遍）
 
 // 必须在命名空间之外声明：写在 namespace vtapp 里会声明出 vtapp::QWindow 这个
 // 全新类型（而非 Qt 的 ::QWindow），编译期报 "incomplete type" 且 qobject_cast 失败。
@@ -64,6 +66,40 @@ class PlayerController : public QObject {
     Q_PROPERTY(QString ffmpegPath           READ ffmpegPath       NOTIFY transcoderChanged)
     Q_PROPERTY(bool    exportRunning        READ exportRunning    NOTIFY exportStateChanged)
     Q_PROPERTY(double  exportProgress       READ exportProgress   NOTIFY exportProgressChanged)
+
+    // ---- 源诊断（老片修复的前置；诊断本身也有独立价值）----
+    //
+    // 沿用本项目既有做法：在 C++ 侧就把**可直接显示的字符串**算好再下发
+    // （参考 specSummary / exportPresets 的注释：Q_INVOKABLE 不参与 QML 依赖追踪，
+    //   会破坏绑定刷新）。分级与扫描方式在这里就翻成「轻度」「交错（上场优先）」。
+    Q_PROPERTY(QVariantMap sourceDiagnosis  READ sourceDiagnosis  NOTIFY diagnosisChanged)
+    Q_PROPERTY(bool        diagnosisRunning READ diagnosisRunning NOTIFY diagnosisChanged)
+
+        /// 修复意图（可读写）。字段见 RestoreIntent。
+        ///
+        /// 刻意用整份 map 读写、而不是逐个 Q_PROPERTY：意图字段会随能力增长而增加，
+        /// 逐个暴露会让"加一个开关"变成三处同步改动（头文件、实现、QML 绑定）。
+        /// 更关键的是——两端各存一份状态必然漂移，这里只有一个来源。
+        Q_PROPERTY(QVariantMap restoreIntent  READ restoreIntent  WRITE setRestoreIntent
+                               NOTIFY restoreIntentChanged)
+        /// 由「诊断结论 + 当前意图」推导出的**将要执行什么**。
+        ///
+        /// 界面只呈现它、不做任何推导：决策只有一处（纯函数 buildPlan，可穷举断言）。
+        /// 用户先看到"它打算做什么"，才谈得上"要不要让它动我的画面"。
+        Q_PROPERTY(QVariantMap restorePreview READ restorePreview NOTIFY restoreIntentChanged)
+
+    /// 预览图的 URL（file://…），未渲染过为空串。
+    Q_PROPERTY(QString restorePreviewImage READ restorePreviewImage NOTIFY restorePreviewChanged)
+    /// 预览失败原因，成功为空串。
+    /// 与"尚未渲染"分开表达：混成一个空串就分不清"还没点过"和"点了但失败"。
+    Q_PROPERTY(QString restorePreviewError READ restorePreviewError NOTIFY restorePreviewChanged)
+
+    /// 当前修复阶段名，非修复路径为空串。
+    ///
+    /// 必须做成 Q_PROPERTY 而不是只留一个 C++ 方法：Q_INVOKABLE/普通方法不参与
+    /// QML 的属性依赖追踪，界面读它时不会随进度变化刷新（会一直显示旧阶段）。
+    /// 通知复用 exportProgressChanged，与 exportSpeed / exportWrittenText 一致。
+    Q_PROPERTY(QString exportStageText READ exportStageText NOTIFY exportProgressChanged)
     Q_PROPERTY(double  exportSpeed          READ exportSpeed      NOTIFY exportProgressChanged)
     Q_PROPERTY(QString exportWrittenText    READ exportWrittenText NOTIFY exportProgressChanged)
     Q_PROPERTY(QString exportOutputPath     READ exportOutputPath NOTIFY exportOutputPathChanged)
@@ -176,6 +212,47 @@ public:
     /// 退出前落盘（音量/静音等低频状态）。
     Q_INVOKABLE void persistSettings();
 
+    /// 诊断结论（已格式化为可直接显示的短语，QML 侧不需要再做翻译）
+    QVariantMap sourceDiagnosis() const;
+    bool        diagnosisRunning() const;
+
+    /// 开始源诊断（后台执行、不阻塞播放）。
+    /// 诊断需要起十余个子进程、耗时数十秒，因此**按需触发**而不是打开文件就自动跑。
+    Q_INVOKABLE void runDiagnosis();
+    Q_INVOKABLE void cancelDiagnosis();
+
+    // ---- 修复导出 ----
+
+    QVariantMap restoreIntent() const;
+    void        setRestoreIntent(const QVariantMap& intent);
+    QVariantMap restorePreview() const;
+
+    /// 按当前修复意图导出。
+    ///
+    /// `plan.valid` 为 false 时**拒绝执行并报错**，不"尽力而为"——顺序约束被破坏的
+    /// 组合会产生永久性伪影（如梳状纹被放大后加粗，之后再也去不掉），
+    /// 宁可不出结果，也不出一个错的结果。
+    Q_INVOKABLE void startRestoreExport(const QString& outputPath);
+
+    /// 当前修复阶段的名称（如「降噪」），非修复路径为空串。
+    ///
+    /// 修复是分阶段串行的，各阶段耗时差异可达十倍以上；只给一个总百分比时，
+    /// 用户无法区分"卡住了"和"正在跑慢阶段"。
+    QString exportStageText() const;
+
+    QString restorePreviewImage() const;
+    QString restorePreviewError() const;
+
+    /// 按当前方案把 `atSec` 处的一帧渲染成 PNG，返回空串表示成功。
+    ///
+    /// **同步**执行（实测 < 1 秒）：这样能在按钮点击里直接拿到结果，
+    /// 不必为"预览"再建一套异步状态机。
+    ///
+    /// 渲染用的是 `previewPlan()`——它**跳过稳定阶段**（稳定要"两遍全片处理 +
+    /// 中间文件"，单帧无法执行）。因此预览不含稳定效果，界面必须如实标注，
+    /// 否则用户会以为稳定没生效。半成品预览 + 明确说明，优于为了"完整"而不可用。
+    Q_INVOKABLE QString renderRestorePreview(double atSec);
+
     // ---- 播放列表（本次会话的队列）----
     QVariantList playlist() const;
     int          playlistIndex() const { return playlistIndex_; }
@@ -280,6 +357,12 @@ signals:
     /// 用户把文件拖入窗口 / 侧栏请求打开文件对话框
     void requestAddFiles();
 
+    /// 源诊断结论变化（一个信号覆盖上面两个属性）
+    void diagnosisChanged();
+    /// 意图变化，或诊断结论变化导致推导结果变化时发出。
+    void restoreIntentChanged();
+    void restorePreviewChanged();
+
 private:
     std::unique_ptr<vtcore::MediaPipeline> pipeline_;
     class VideoRenderer*    renderer_ = nullptr;
@@ -291,6 +374,22 @@ private:
 
     // ---- 导出状态 ----
     std::unique_ptr<Exporter> exporter_;
+    std::unique_ptr<FilmDiagnosis> filmDiag_;   ///< 源诊断（惰性创建）
+    DiagnosisResult diag_;                      ///< 最近一次诊断结论
+    RestoreIntent   intent_;                    ///< 修复意图（界面可调，默认不处理）
+    /// 修复执行器。与 exporter_ 一样随控制器创建：它在 start() 之前不起任何子进程，
+    /// 提前创建只是为了避免"首次使用时才接线"这种容易漏掉的路径。
+    std::unique_ptr<RestoreRunner> restoreRunner_;
+    /// 当前阶段（修复路径）；非修复路径保持为空/-1。
+    QString exportStageName_;
+    int     exportStageIndex_ = -1;
+
+    // ---- 修复预览 ----
+    QString restorePreviewImage_;   ///< 预览图 URL
+    QString restorePreviewError_;
+    /// 递增序号拼进 URL。QML 的 Image 在 source 不变时不会重新加载，
+    /// 于是"连续预览同一秒"会一直显示旧图——看起来像预览没反应。
+    int     restorePreviewSeq_ = 0;
     TranscoderInfo transcoder_;
     double  exportProgress_ = -1.0;
     double  exportSpeed_    = 0.0;

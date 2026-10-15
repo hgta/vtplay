@@ -41,7 +41,13 @@ Dialog {
     // 注意：不要命名为 reset()——Popup 基类已有同名成员，会触发
     // "invalid override of property change signal or superclass signal"。
     function resetForm() {
-        phase = "idle"
+        // 重置时导出可能**已经在跑**（修复导出的按钮就在本对话框里），不能无脑置回 idle：
+        // 置回去界面上立刻变成"没在导出"——没有进度、没有阶段行、没有取消按钮，
+        // 而且「开始导出」按钮会重新出现，用户能叠一个第二路导出上去。
+        //
+        // 这里必须主动判断，不能只靠下面的 exportStateChanged：
+        // 它只在起/停时发一次，进度刷新不会重发；对话框重开时那一次早就错过了。
+        phase = player.exportRunning ? "running" : "idle"
         presetId = "wechat-share"
         userPickedPath = false
         resultPath = ""
@@ -70,6 +76,16 @@ Dialog {
             dlg.failDetail = detail
         }
         function onExportCancelled() { dlg.phase = "idle" }
+
+        // 导出中状态以 exportRunning 为准，而不是"点了按钮就置 running"。
+        //
+        // 原因：置 running 的地方只有点击导出按钮那一处，而那属于**分享导出**路径。
+        // 修复导出走的是另一个入口（按钮在 RestoreOptions 里），不在这里接上的话，
+        // 它会全程停在 idle 阶段——没有进度、没有阶段名、**也没有取消按钮**，
+        // 一个要跑几十分钟的任务就这样变成一个无法中止的黑盒。
+        function onExportStateChanged() {
+            if (player.exportRunning && dlg.phase !== "running") dlg.phase = "running"
+        }
     }
 
     FileDialog {
@@ -108,6 +124,44 @@ Dialog {
                 Layout.fillWidth: true
             }
         }
+
+        // ---- 源诊断 ----
+        // 放在**预设列表之前**：诊断的用途是帮用户决定"要不要处理、怎么处理"，
+        // 而决策点就是下面的预设选择。放在决策之后等于白说。
+        // 未诊断时它只占一行（"源诊断 + 开始诊断"），不会挤压预设列表。
+        // 组件只呈现结论、不做决策（见 DiagnosisSummary.qml 的说明）。
+        // 宽度说明：这两个组件**不会铺满容器宽度**，只占自身内容的自然宽度
+        // （实测 307 / 454，而容器是 528）。功能不受影响——组件内部各行都是
+        // "容器宽度 = 自身内容宽度"，所以按钮完整可见、没有被裁。
+        // 至于为什么同为 ColumnLayout 根节点，内联的能拿到 528、组件实例拿不到，
+        // 尚未查明（已排除 implicitWidth: 0 与 Layout.preferredWidth: 0）。
+        // 这里**不做未经验证的修补**：宁可留一个已实测的外观缺陷，
+        // 也不留一个"看起来更对但没测过"的改法。详见 tasks.md 5b.4。
+        DiagnosisSummary {
+            Layout.fillWidth: true
+            visible: player.hasMedia
+        }
+
+        // ---- 修复设置 ----
+        // 紧跟诊断之后：先看"源怎么了"，再决定"怎么处理"，顺序即用户的思考顺序。
+        // outputPath 由对话框传入——组件不该自己造默认路径，否则用户改了路径、
+        // 这里却导到别处去了。
+        RestoreOptions {
+            Layout.fillWidth: true
+            visible: player.hasMedia
+            outputPath: dlg.outputPath
+        }
+
+        // 【为什么两个组件要包一层 Item，而不是直接用 Layout.fillWidth】
+        //
+        // 实测：在同一个 contentItem 里，**内联**的 ColumnLayout 能拿到容器全宽 528，
+        // 而自定义组件（根节点同为 ColumnLayout）只拿到自身内容的自然宽度
+        // （DiagnosisSummary 307、RestoreOptions 454）。给了 Layout.fillWidth: true
+        // 也一样，且排除过 implicitWidth: 0 / Layout.preferredWidth: 0 的影响
+        // （删掉这两项后数值完全没变）。**成因未查明**，因此不继续押假设，
+        // 改用"外层 Item 承接布局宽度、组件按 parent.width 跟随"这一确定有效的做法。
+        //
+        // 判定依据是宽度而不是截图——截图会因 dpr 换算出错，见 tasks.md 5b.4。
 
         // ---- 转码器缺失提示 ----
         // 必须给出可执行的下一步：「请安装后重启」用户装完了也未必知道去哪指路径，
@@ -279,6 +333,36 @@ Dialog {
             Layout.fillWidth: true
             spacing: Theme.padS
             visible: dlg.phase === "running"
+
+            // 显示**完整方案**，而不是"当前阶段"。
+            //
+            // 原因是一个原理性限制：所有修复阶段串在**同一条 ffmpeg 滤镜链、一次主遍**
+            // 里完成（刻意的效率选择——每阶段起一个进程要反复落无损中间文件，
+            // 磁盘与耗时都不可接受）。因此主遍里**根本不存在阶段边界**，
+            // 精确的"当前阶段"拿不到，只能由总进度近似推断。
+            // 声称一个近似的阶段名是在编造精度；不如告诉用户"它到底要做什么"——
+            // 这才是他真正需要的信息，也是他能在几十分钟等待中判断是否合理的依据。
+            Text {
+                Layout.fillWidth: true
+                visible: player.restorePreview.usable === true
+                text: (player.restorePreview.onlyEncode ? "仅重新编码：" : "将执行：")
+                      + player.restorePreview.summary
+                color: Theme.accent
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+
+            // 阶段名只作**粗略提示**，故明确标注为估算。
+            // 修复各阶段耗时差异可达十倍以上（降噪/稳定远慢于锐化），
+            // 只有总百分比时用户无法区分"卡住了"和"正在跑慢阶段"。
+            Text {
+                Layout.fillWidth: true
+                visible: player.exportStageText.length > 0
+                text: "阶段（估算）：" + player.exportStageText
+                color: Theme.textDim
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
 
             RowLayout {
                 Layout.fillWidth: true

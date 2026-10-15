@@ -113,6 +113,126 @@ QStringList Exporter::buildArgs(const ExportPreset& p, const QString& input,
     return a;
 }
 
+// ---------------------------------------------------------------- 修复路径
+//
+// 与上面的分享路径**完全并行**：分享路径的行为必须逐字不变（有回归断言守着），
+// 修复能力不修改它、也不复用它的参数。
+
+QString Exporter::buildFilterChain(const RestorePlan& plan, int srcW, int srcH) {
+    Q_UNUSED(srcW);
+    Q_UNUSED(srcH);
+    QStringList chain;
+
+    for (const Stage& s : plan.stages) {
+        switch (s.kind) {
+            case StageKind::InverseTelecine:
+                // 场匹配 + 丢弃重复帧还原原始帧率。**帧数会减少（如 30→24）**，
+                // 这是正确结果而不是丢帧，界面需要说明。
+                chain << QStringLiteral("fieldmatch=order=auto:combmatch=full")
+                      << QStringLiteral("decimate");
+                break;
+
+            case StageKind::Deinterlace:
+                // bwdif：内置、无需额外数据文件；send_frame 保持帧率不变
+                chain << QStringLiteral("bwdif=mode=send_frame:parity=auto:deint=all");
+                break;
+
+            case StageKind::Stabilize:
+                // 变换数据由 detect 那一遍事先写进 transforms.trf。
+                // 这里用**相对文件名**：把 Windows 绝对路径写进滤镜串会因为 `D:`
+                // 的冒号被语法解析器炸掉（实测踩过），改由调用方设置工作目录。
+                chain << QStringLiteral(
+                    "vidstabtransform=input=transforms.trf:smoothing=10:crop=black");
+                break;
+
+            case StageKind::Denoise: {
+                // hqdn3d 的参数顺序是 luma_spatial:chroma_spatial:luma_tmp:chroma_tmp
+                static const char* kLevels[] = { "", "1.5:1.5:6:6", "3:3:9:9", "5:5:12:12" };
+                const int n = std::clamp(s.denoiseStrength, 0, 3);
+                if (s.chromaOnly) {
+                    // 保颗粒：亮度两项设为 0，只降色度噪点，亮度颗粒原样保留
+                    chain << QStringLiteral("hqdn3d=0:9:0:9");
+                } else if (n > 0) {
+                    chain << QStringLiteral("hqdn3d=%1").arg(QLatin1String(kLevels[n]));
+                }
+                break;
+            }
+
+            case StageKind::Upscale:
+                // 目标尺寸已在决策阶段算好并保证偶数（奇数会直接编码失败）
+                if (s.targetW > 0 && s.targetH > 0) {
+                    chain << QStringLiteral("scale=%1:%2:flags=lanczos")
+                                 .arg(s.targetW).arg(s.targetH);
+                }
+                break;
+
+            case StageKind::AddGrain:
+                // 只加时域噪声：补回胶片质感，但不抬高亮度均值（不改变整体明暗）
+                chain << QStringLiteral("noise=alls=6:allf=t");
+                break;
+
+            case StageKind::Sharpen:
+                // CAS（对比度自适应锐化）过冲小，比 unsharp 更适合老片
+                chain << QStringLiteral("cas=strength=0.4");
+                break;
+
+            case StageKind::ColorCorrect:
+                chain << QStringLiteral("eq=contrast=1.04:saturation=1.06:gamma=1.02");
+                break;
+
+            case StageKind::Encode:
+                break;   // 编码不是滤镜，由 buildRestoreArgs 处理
+        }
+    }
+    return chain.join(QLatin1Char(','));
+}
+
+QStringList Exporter::buildRestoreArgs(const RestorePlan& plan, const QString& input,
+                                       const QString& output, int srcW, int srcH,
+                                       bool hasAudio, int threads) {
+    // 顺序约束不成立时**拒绝构造参数**：宁可失败，也不产出一段画面已经毁掉的视频
+    if (!plan.valid) return {};
+
+    QStringList a;
+    a << QStringLiteral("-hide_banner")
+      << QStringLiteral("-nostdin")
+      << QStringLiteral("-y")
+      << QStringLiteral("-i") << input;
+
+    const QString vf = buildFilterChain(plan, srcW, srcH);
+    if (!vf.isEmpty()) a << QStringLiteral("-vf") << vf;
+    if (threads > 0) a << QStringLiteral("-threads") << QString::number(threads);
+
+    Stage enc;
+    for (const Stage& s : plan.stages) {
+        if (s.kind == StageKind::Encode) enc = s;
+    }
+
+    // 保真编码：crf 决定码率，**不设码率上限**（上限会直接毁掉修复的意义）。
+    // 10bit 减轻色带；兼容优先时退回 8bit H.264（老设备/部分播放器只认 8bit）。
+    a << QStringLiteral("-c:v") << (enc.tenBit ? QStringLiteral("libx265")
+                                               : QStringLiteral("libx264"))
+      << QStringLiteral("-preset") << QStringLiteral("slow")
+      << QStringLiteral("-crf")    << QString::number(enc.crf)
+      << QStringLiteral("-pix_fmt")
+      << (enc.tenBit ? QStringLiteral("yuv420p10le") : QStringLiteral("yuv420p"));
+
+    if (enc.keepGrainEncode) a << QStringLiteral("-tune") << QStringLiteral("grain");
+
+    if (!hasAudio) {
+        a << QStringLiteral("-an");
+    } else {
+        a << QStringLiteral("-c:a") << QStringLiteral("aac")
+          << QStringLiteral("-b:a") << QStringLiteral("192k");
+    }
+
+    a << QStringLiteral("-movflags") << QStringLiteral("+faststart")
+      << QStringLiteral("-progress") << QStringLiteral("pipe:1")
+      << QStringLiteral("-nostats")
+      << output;
+    return a;
+}
+
 qint64 Exporter::estimateBytes(const ExportPreset& p, double durationSec,
                                qint64 sourceBytes) {
     if (p.streamCopy) return sourceBytes;   // 体积基本不变

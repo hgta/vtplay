@@ -15,10 +15,16 @@ add_executable(vtplay
     src/VideoRenderer.cpp
     src/AudioOutput.cpp
     src/Exporter.cpp
+    src/FilmDiagnosis.cpp
+    src/RestorePlan.cpp
+    src/RestoreRunner.cpp
     include/vtapp/PlayerController.h
     include/vtapp/VideoRenderer.h
     include/vtapp/AudioOutput.h
     include/vtapp/Exporter.h
+    include/vtapp/FilmDiagnosis.h
+    include/vtapp/RestorePlan.h
+    include/vtapp/RestoreRunner.h
 )
 
 # 资源脚本仅 Windows 需要（MinGW 经 windres 自动编译）
@@ -68,6 +74,8 @@ qt_add_qml_module(vtplay
         qml/ExportDialog.qml
         qml/ShortcutsDialog.qml
         qml/AboutDialog.qml
+        qml/DiagnosisSummary.qml
+        qml/RestoreOptions.qml
         qml/Theme.qml
     RESOURCES
         ${VTPLAY_LOGO_PATH}

@@ -1,4 +1,6 @@
 #include "PlayerController.h"
+
+#include <QDir>     // 修复预览图的落盘位置
 #include "VideoRenderer.h"
 #include "AudioOutput.h"
 
@@ -69,6 +71,62 @@ PlayerController::PlayerController(QObject* parent) : QObject(parent) {
         emit exportProgressChanged();
         emit exportCancelled();
     });
+
+    // ---- 修复导出执行器 ----
+    //
+    // 与分享导出的两点区别，都要在这里体现：
+    //   · 修复分阶段（可能"探测遍 + 主遍"），进度必须带阶段名，
+    //     否则用户无法区分"卡住了"和"正在跑慢阶段"
+    //   · 参数由「阶段清单 → 滤镜链 → 参数」多级推导而来，一旦结果不对，
+    //     唯一能直接回答"到底执行了什么"的就是实际命令行，所以必须留下来
+    restoreRunner_ = std::make_unique<RestoreRunner>();
+
+    // 清理异常退出（崩溃/断电）残留的临时目录。只在这里调用：
+    // 它按时间阈值判断，避免误删另一个正在运行的实例的目录。
+    RestoreRunner::sweepStaleTempDirs();
+
+    connect(restoreRunner_.get(), &RestoreRunner::commandBuilt, this,
+            [](const QString& pass, const QString& command) {
+        qInfo("[restore] %s: %s", qUtf8Printable(pass), qUtf8Printable(command));
+    });
+    connect(restoreRunner_.get(), &RestoreRunner::progressChanged, this,
+            [this](double ratio, double speed, qint64 written,
+                   int stageIndex, const QString& stageName) {
+        exportProgress_   = ratio;
+        exportSpeed_      = speed;
+        exportWritten_    = written;
+        exportStageIndex_ = stageIndex;
+        exportStageName_  = stageName;
+        emit exportProgressChanged();
+    });
+    connect(restoreRunner_.get(), &RestoreRunner::runningChanged, this, [this]() {
+        emit exportStateChanged();
+    });
+    connect(restoreRunner_.get(), &RestoreRunner::finished, this,
+            [this](const QString& path) {
+        exportProgress_   = 1.0;
+        exportOutputPath_ = path;
+        emit exportProgressChanged();
+        emit exportOutputPathChanged();
+        emit exportFinished(path);
+    });
+    connect(restoreRunner_.get(), &RestoreRunner::failed, this,
+            [this](const QString& message, const QString& detail) {
+        exportProgress_ = -1.0;
+        emit exportProgressChanged();
+        emit exportFailed(message, detail);
+    });
+    connect(restoreRunner_.get(), &RestoreRunner::cancelled, this, [this]() {
+        exportProgress_ = -1.0;
+        emit exportProgressChanged();
+        emit exportCancelled();
+    });
+
+    // 诊断结论一变，推导出的方案也就变了。接在 diagnosisChanged 上而不是在
+    // 各条诊断路径里分别 emit：后者每加一条路径就多一个会漏的地方，
+    // 漏掉的表现是"跑完诊断了，但界面上的方案仍是空的"。
+    connect(this, &PlayerController::diagnosisChanged, this,
+            &PlayerController::restoreIntentChanged);
 
     // 启动时探测一次转码器：导出入口据此决定是否可用（约几十毫秒）。
     // 必须先读用户配置的路径——探测顺序的第一级就是它，读晚了首次探测会忽略配置。
@@ -373,7 +431,13 @@ QVariantList PlayerController::exportPresets() const {
 }
 
 bool PlayerController::exportRunning() const {
-    return exporter_ && exporter_->isRunning();
+    // 两个执行器都算「导出中」：分享导出在 exporter_，修复导出在 restoreRunner_。
+    //
+    // 只问 exporter_ 是一个真实故障：修复导出运行期间这里恒为 false，界面据此
+    // 停在 idle 阶段——不显示「正在导出…」、没有阶段行、**也没有取消按钮**，
+    // 一个要跑几十分钟的任务变成点了没反应、还无法中止的黑盒。
+    return (exporter_ && exporter_->isRunning())
+        || (restoreRunner_ && restoreRunner_->isRunning());
 }
 
 QString PlayerController::exportWrittenText() const {
@@ -508,6 +572,9 @@ void PlayerController::startExport(const QString& presetId, const QString& outpu
 
 void PlayerController::cancelExport() {
     if (exporter_) exporter_->cancel();
+    // 修复导出走的是另一个执行器，必须一并取消：否则界面上那个「取消导出」
+    // 按钮对修复导出无效——按下去什么都不发生，任务仍会跑完。
+    if (restoreRunner_) restoreRunner_->cancel();
 }
 
 void PlayerController::openOutputFolder() {
@@ -785,6 +852,259 @@ void PlayerController::openContainingFolder(const QString& filePath) {
     if (filePath.isEmpty()) return;
     const QString dir = QFileInfo(filePath).absolutePath();
     if (!dir.isEmpty()) QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+}
+
+// ---------------------------------------------------------------- 源诊断
+
+QVariantMap PlayerController::sourceDiagnosis() const {
+    QVariantMap m;
+    m.insert(QStringLiteral("scan"),        scanTypeName(diag_.scan));
+    m.insert(QStringLiteral("scanForced"),  diag_.scanOverridden);
+    m.insert(QStringLiteral("detail"),      diagLevelName(diag_.detail));
+    m.insert(QStringLiteral("detailValue"), diag_.detailValue);
+    m.insert(QStringLiteral("shake"),       diagLevelName(diag_.shake));
+    m.insert(QStringLiteral("shakeValue"),  diag_.shakeValue);
+    m.insert(QStringLiteral("bars"),        diagLevelName(diag_.bars));
+    m.insert(QStringLiteral("luma"),        diagLevelName(diag_.lumaShift));
+    m.insert(QStringLiteral("chroma"),      diagLevelName(diag_.chromaShift));
+    m.insert(QStringLiteral("usable"),      diag_.anyUsable());
+    m.insert(QStringLiteral("notes"),       diag_.notes);
+    return m;
+}
+
+bool PlayerController::diagnosisRunning() const {
+    return filmDiag_ && filmDiag_->isRunning();
+}
+
+void PlayerController::runDiagnosis() {
+    const QString path = sourcePath();
+    if (path.isEmpty()) return;
+
+    if (!filmDiag_) {
+        filmDiag_ = std::make_unique<FilmDiagnosis>(this);
+        connect(filmDiag_.get(), &FilmDiagnosis::finished, this,
+                [this](const DiagnosisResult& r) {
+                    diag_ = r;
+                    emit diagnosisChanged();
+                });
+        connect(filmDiag_.get(), &FilmDiagnosis::failed, this,
+                [this](const QString&, const QString&) {
+                    // 诊断失败 ≠ 源没问题。清空结论并保持「未知」，
+                    // 让界面如实显示"未能诊断"，绝不默默当作"一切正常"。
+                    diag_ = DiagnosisResult{};
+                    emit diagnosisChanged();
+                });
+        connect(filmDiag_.get(), &FilmDiagnosis::runningChanged, this,
+                &PlayerController::diagnosisChanged);
+    }
+
+    // 用户手动指定过扫描方式（诊断误判时的逃生门）就沿用，否则交给自动检出
+    filmDiag_->setScanOverride(diag_.scanOverridden ? diag_.scan : ScanType::Unknown);
+    filmDiag_->setTranscoderPath(transcoder_.path);
+
+    diag_ = DiagnosisResult{};   // 先清空，避免界面短暂显示上一次的结论
+    emit diagnosisChanged();
+    filmDiag_->start(path, durationSec(), videoWidth(), videoHeight());
+}
+
+void PlayerController::cancelDiagnosis() {
+    if (filmDiag_) filmDiag_->cancel();
+}
+
+// ---------------------------------------------------------------- 修复导出
+
+namespace {
+
+/// 意图的序列化。放在这里而不是做成成员，是为了让 setter 能拿它做**值比较**：
+/// 用序列化结果比较意味着以后给 RestoreIntent 加字段时，不必同步补一段
+/// 字段比较代码——漏补一处就会静默丢掉变更（界面改了、后端没反应）。
+QVariantMap serializeIntent(const RestoreIntent& s) {
+    QVariantMap m;
+    m.insert(QStringLiteral("strength"),            int(s.strength));
+    m.insert(QStringLiteral("keepGrain"),           s.keepGrain);
+    m.insert(QStringLiteral("targetShortSide"),     s.targetShortSide);
+    m.insert(QStringLiteral("colorFix"),            s.colorFix);
+    m.insert(QStringLiteral("preferCompatibility"), s.preferCompatibility);
+    m.insert(QStringLiteral("allowDeinterlace"),    s.allowDeinterlace);
+    m.insert(QStringLiteral("allowStabilize"),      s.allowStabilize);
+    m.insert(QStringLiteral("allowDenoise"),        s.allowDenoise);
+    m.insert(QStringLiteral("allowSharpen"),        s.allowSharpen);
+    return m;
+}
+
+}   // namespace
+
+QVariantMap PlayerController::restoreIntent() const {
+    return serializeIntent(intent_);
+}
+
+void PlayerController::setRestoreIntent(const QVariantMap& in) {
+    // 逐字段读、缺项保持原值：界面只回传它改动的那些键也不会把其余项清掉。
+    const auto intOf  = [&in](const char* k, int def) {
+        const QString key = QString::fromLatin1(k);
+        return in.contains(key) ? in.value(key).toInt() : def;
+    };
+    const auto boolOf = [&in](const char* k, bool def) {
+        const QString key = QString::fromLatin1(k);
+        return in.contains(key) ? in.value(key).toBool() : def;
+    };
+
+    RestoreIntent n = intent_;
+    n.strength            = RestoreStrength(qBound(0, intOf("strength", int(n.strength)), 3));
+    n.keepGrain           = boolOf("keepGrain", n.keepGrain);
+    n.targetShortSide     = qMax(0, intOf("targetShortSide", n.targetShortSide));
+    n.colorFix            = boolOf("colorFix", n.colorFix);
+    n.preferCompatibility = boolOf("preferCompatibility", n.preferCompatibility);
+    n.allowDeinterlace    = boolOf("allowDeinterlace", n.allowDeinterlace);
+    n.allowStabilize      = boolOf("allowStabilize", n.allowStabilize);
+    n.allowDenoise        = boolOf("allowDenoise", n.allowDenoise);
+    n.allowSharpen        = boolOf("allowSharpen", n.allowSharpen);
+
+    if (serializeIntent(n) == serializeIntent(intent_)) return;   // 无变化不重算
+    intent_ = n;
+    emit restoreIntentChanged();
+}
+
+QVariantMap PlayerController::restorePreview() const {
+    QVariantMap m;
+
+    // 没有可用结论就不推导：宁可说"不知道"，也不假装知道。
+    // （anyUsable() 为 false = 诊断没跑过，或跑完了但各项都是「未知」）
+    if (!diag_.anyUsable() || videoWidth() <= 0 || videoHeight() <= 0) {
+        m.insert(QStringLiteral("usable"), false);
+        return m;
+    }
+
+    const RestorePlan plan = buildPlan(diag_, intent_, videoWidth(), videoHeight());
+    m.insert(QStringLiteral("usable"), true);
+    m.insert(QStringLiteral("valid"), plan.valid);
+    m.insert(QStringLiteral("invalidReason"), plan.invalidReason);
+    m.insert(QStringLiteral("summary"), plan.summary());
+    m.insert(QStringLiteral("notes"), plan.notes);
+    m.insert(QStringLiteral("onlyEncode"), plan.onlyEncode());
+
+    QVariantList stages;
+    bool changesFrameCount = false;
+    for (const Stage& s : plan.stages) {
+        QVariantMap sm;
+        sm.insert(QStringLiteral("kind"), int(s.kind));
+        sm.insert(QStringLiteral("name"), stageKindName(s.kind));
+        sm.insert(QStringLiteral("reason"), s.reason);
+        sm.insert(QStringLiteral("twoPass"), s.twoPass);
+        sm.insert(QStringLiteral("needsTempFiles"), s.needsTempFiles);
+        sm.insert(QStringLiteral("changesFrameCount"), s.changesFrameCount);
+        stages.append(sm);
+        if (s.changesFrameCount) changesFrameCount = true;
+    }
+    m.insert(QStringLiteral("stages"), stages);
+
+    // 单独拎出来，因为界面要区别对待：反胶转导致帧数变少是**正确结果**，
+    // 必须在导出前讲明，否则用户会以为导出坏了。
+    m.insert(QStringLiteral("changesFrameCount"), changesFrameCount);
+    return m;
+}
+
+QString PlayerController::exportStageText() const {
+    return exportStageName_;
+}
+
+QString PlayerController::restorePreviewImage() const {
+    return restorePreviewImage_;
+}
+
+QString PlayerController::restorePreviewError() const {
+    return restorePreviewError_;
+}
+
+QString PlayerController::renderRestorePreview(double atSec) {
+    const QString input = sourcePath();
+    if (input.isEmpty()) return tr("没有可预览的媒体");
+    if (!diag_.anyUsable() || videoWidth() <= 0 || videoHeight() <= 0) {
+        return tr("尚未完成源诊断，无法推导预览方案");
+    }
+
+    const RestorePlan full = buildPlan(diag_, intent_, videoWidth(), videoHeight());
+    if (!full.valid) return tr("方案不合法：") + full.invalidReason;
+
+    // 预览跳过稳定阶段：稳定是"两遍全片处理 + 中间文件"，单帧根本执行不了。
+    // 与其让预览等上几分钟，不如让它不含稳定效果、并在界面如实标注——
+    // 半成品预览 + 明确说明，优于为了"完整"而让预览不可用。
+    const RestorePlan preview = previewPlan(full);
+
+    // 把时间点夹进片长之内。
+    //
+    // 起因是一个真实故障：界面传 `player.position`，而播放到结尾后该值仍在片长附近，
+    // 于是 `-ss` 落在片尾之后——ffmpeg **正常退出（退出码 0）却不产出任何画面**，
+    // 界面只看到一句"预览未生成文件"，完全看不出是时间点的问题。
+    // 预览的语义是"看看当前位置的效果"，取最后一帧显然比报错有用。
+    double t = atSec;
+    const double dur = durationSec();
+    if (dur > 0.0) {
+        // 留 0.1s 余量：正好等于片长时同样会取不到帧
+        t = qBound(0.0, t, qMax(0.0, dur - 0.1));
+    } else {
+        t = qMax(0.0, t);   // 片长未知：至少不能是负数
+    }
+
+    const QString out = QDir::temp().filePath(QStringLiteral("vtplay-preview.png"));
+
+    restoreRunner_->setTranscoderPath(transcoder_.path);
+    const QString err = restoreRunner_->renderPreview(preview, input, t,
+                                                      videoWidth(), videoHeight(), out);
+    if (!err.isEmpty()) {
+        // 失败时上一次的图仍留着，但必须把失败讲出来：
+        // 否则用户看着旧图，会以为它就是"新设置的预览结果"。
+        restorePreviewError_ = err;
+        emit restorePreviewChanged();
+        return err;
+    }
+
+    restorePreviewError_.clear();
+    // 序号拼进 URL：QML 的 Image 在 source 不变时不会重新加载，
+    // 连续预览同一秒会一直显示旧图，看起来像"预览没反应"。
+    restorePreviewImage_ = QUrl::fromLocalFile(out).toString()
+                           + QStringLiteral("?v=") + QString::number(++restorePreviewSeq_);
+    emit restorePreviewChanged();
+    return QString();
+}
+
+void PlayerController::startRestoreExport(const QString& outputPath) {
+    const QString input = sourcePath();
+    if (input.isEmpty()) {
+        emit exportFailed(tr("没有可导出的媒体"), QString());
+        return;
+    }
+    if (outputPath.isEmpty()) {
+        emit exportFailed(tr("输出路径为空"), QString());
+        return;
+    }
+    if (!diag_.anyUsable()) {
+        emit exportFailed(tr("尚未完成源诊断"),
+                          tr("修复导出依据诊断结论决定处理哪些问题，请先点「开始诊断」。"));
+        return;
+    }
+
+    const RestorePlan plan = buildPlan(diag_, intent_, videoWidth(), videoHeight());
+
+    // 顺序约束不成立时拒绝执行：这类组合会产生永久性伪影
+    // （典型是梳状纹被放大后加粗，之后再怎么处理都去不掉）。
+    if (!plan.valid) {
+        emit exportFailed(tr("修复方案不合法，已拒绝导出"), plan.invalidReason);
+        return;
+    }
+
+    restoreRunner_->setTranscoderPath(transcoder_.path);
+
+    exportStageName_.clear();
+    exportStageIndex_ = -1;
+    exportProgress_   = 0.0;
+    emit exportProgressChanged();
+
+    // 时间段暂为全片（时间段选择尚未接入）。
+    // expectedBytes 传 0 = 跳过输出空间预估：修复档的码率由 crf 决定，
+    // 事先给不出可靠数字，与其报一个假数字不如不报。
+    restoreRunner_->start(plan, input, outputPath, videoWidth(), videoHeight(),
+                          hasAudio(), durationSec(), TimeRange{}, 0);
 }
 
 } // namespace vtapp

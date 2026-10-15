@@ -6,6 +6,8 @@
 #include <QStringList>
 #include <memory>
 
+#include "RestorePlan.h"   // 修复路径的参数构造以阶段清单为输入
+
 class QProcess;
 
 namespace vtapp {
@@ -60,6 +62,24 @@ public:
     static QStringList buildArgs(const ExportPreset& preset,
                                  const QString& input, const QString& output,
                                  int srcW, int srcH, bool hasAudio, int threads = 0);
+
+    // ---- 修复路径（老片）----
+    // 与上面的分享路径**并行存在**：分享路径的行为必须逐字不变，
+    // 修复能力不修改它、也不复用它的参数。
+
+    /// 由阶段清单构造滤镜链（即 `-vf` 的值）。
+    /// 返回空串表示不需要滤镜。链中的顺序就是阶段清单的顺序。
+    static QString buildFilterChain(const RestorePlan& plan, int srcW, int srcH);
+
+    /// 由阶段清单构造完整 ffmpeg 参数（修复导出路径）。
+    ///
+    /// 与分享路径的关键差异：
+    ///   · **不设 `-maxrate`**——修复的目标是画质，码率上限会直接毁掉它
+    ///   · 默认 HEVC 10bit（减轻色带），可用兼容优先切换为 H.264 8bit
+    ///   · `-preset slow` 与 `-tune grain`（保住胶片颗粒）
+    static QStringList buildRestoreArgs(const RestorePlan& plan, const QString& input,
+                                        const QString& output, int srcW, int srcH,
+                                        bool hasAudio, int threads = 0);
 
     /// 预估输出体积（字节）。streamCopy 时返回源文件大小（体积基本不变）。
     static qint64 estimateBytes(const ExportPreset& preset, double durationSec,

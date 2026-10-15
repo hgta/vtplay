@@ -24,3 +24,27 @@ set_target_properties(vtplay-export-check PROPERTIES
     AUTOMOC ON
     WIN32_EXECUTABLE FALSE
 )
+
+# src/tools — 源诊断 headless 自测：纯函数断言（解析/分级/判定）+ 真实文件诊断
+# 用法：vtplay-diagnose-check --selftest              纯函数断言（秒级，无需素材）
+#       vtplay-diagnose-check <media-file> [--segments N]
+add_executable(vtplay-diagnose-check
+    src/diagnose_check.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/src/FilmDiagnosis.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/src/RestorePlan.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/src/RestoreRunner.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/src/Exporter.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/include/vtapp/FilmDiagnosis.h
+    ${CMAKE_SOURCE_DIR}/src/app/include/vtapp/RestorePlan.h
+    ${CMAKE_SOURCE_DIR}/src/app/include/vtapp/RestoreRunner.h
+    ${CMAKE_SOURCE_DIR}/src/app/include/vtapp/Exporter.h
+)
+target_include_directories(vtplay-diagnose-check PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/app/include
+    ${CMAKE_SOURCE_DIR}/src/app/include/vtapp
+)
+target_link_libraries(vtplay-diagnose-check PRIVATE vtcore Qt6::Core)
+set_target_properties(vtplay-diagnose-check PROPERTIES
+    AUTOMOC ON
+    WIN32_EXECUTABLE FALSE
+)
