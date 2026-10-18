@@ -32,9 +32,8 @@ env:
 jobs:
   windows-81-portable:
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
+    # 没有 msys2 shell 的默认设置：装了 setup-msys2 才有那个 shell，而这里刻意不用它，
+    # 所有步骤都是 pwsh，MSYS2 只作为"被调用的工具"出现（bash -lc 由脚本自己处理路径）。
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,36 +62,44 @@ jobs:
           "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
           "CHANGELOG_KEY=$declared-win81" >> $env:GITHUB_ENV
 
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          # update: true 先跑一次 -Syu（几分钟），换来的是一份新鲜的数据库。
-          # 别改成 false：runner 上预装的 MSYS2 数据库很可能已经过期，
-          # 那样 pacman -S 会以「target not found」失败（本次就踩了）。
-          update: true
-          # MINGW64 已被标记为 deprecated（会打一条 warning），这里显式接受：
-          # 这条构建线必须用 msvcrt 的 mingw64 —— UCRT64/CLANG64 没有 Qt5。
-          suppress-deprecation-warnings: msystem-mingw64
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-make
-            mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-binutils
-            mingw-w64-x86_64-nasm
-            mingw-w64-x86_64-qt5-base
-            mingw-w64-x86_64-qt5-declarative
-            mingw-w64-x86_64-qt5-quickcontrols
-            mingw-w64-x86_64-qt5-quickcontrols2
-            mingw-w64-x86_64-qt5-multimedia
-            mingw-w64-x86_64-qt5-tools
-            mingw-w64-x86_64-libx264
-            mingw-w64-x86_64-x265
-            mingw-w64-x86_64-dav1d
-            # 包名带点：是这个包提供 libvidstab.a / vid.stab/libvidstab.h
-            # （写成 mingw-w64-x86_64-vidstab 会让 setup-msys2 直接失败——第一次就这么挂的）
-            mingw-w64-x86_64-vid.stab
+      # 不用 msys2/setup-msys2 这个 action：它在 runner 上以「cmd.exe exit 1」的方式失败，
+      # 而 Actions 日志接口要鉴权、看不到原因（诊断步骤显示 pacman.log 里连我们这轮的记录都没有，
+      # 说明它根本没跑到 pacman 那一步）。runner 自带 C:\msys64，直接驱动它更透明。
+      - name: 升级并安装 MSYS2 依赖
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (Get-Variable PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+            $PSNativeCommandUseErrorActionPreference = $false   # pacman 的进度信息走 stderr
+          }
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          if (-not (Test-Path $bash)) { throw "runner 上没有 $bash" }
+
+          # -Syuu 要跑两遍：第一遍可能升级 pacman 自身，MSYS2 官方建议紧接着再跑一次
+          foreach ($i in 1..2) {
+            & $bash -lc 'pacman -Syuu --noconfirm'
+            if ($LASTEXITCODE -ne 0) { throw "pacman -Syuu 失败（第 $i 遍），退出码 $LASTEXITCODE" }
+          }
+
+          # 注意 vidstab 的包名带点：mingw-w64-x86_64-vid.stab
+          $pkgs = @(
+            'mingw-w64-x86_64-gcc','mingw-w64-x86_64-cmake','mingw-w64-x86_64-ninja',
+            'mingw-w64-x86_64-make','mingw-w64-x86_64-pkgconf','mingw-w64-x86_64-binutils',
+            'mingw-w64-x86_64-nasm',
+            'mingw-w64-x86_64-qt5-base','mingw-w64-x86_64-qt5-declarative',
+            'mingw-w64-x86_64-qt5-quickcontrols','mingw-w64-x86_64-qt5-quickcontrols2',
+            'mingw-w64-x86_64-qt5-multimedia','mingw-w64-x86_64-qt5-tools',
+            'mingw-w64-x86_64-libx264','mingw-w64-x86_64-x265',
+            'mingw-w64-x86_64-dav1d','mingw-w64-x86_64-vid.stab'
+          ) -join ' '
+          & $bash -lc "pacman -S --needed --noconfirm $pkgs"
+          if ($LASTEXITCODE -ne 0) { throw "安装依赖失败，退出码 $LASTEXITCODE" }
+
+          & $bash -lc 'pacman -Q mingw-w64-x86_64-qt5-tools mingw-w64-x86_64-vid.stab'
+          & $bash -lc 'ls -l /mingw64/bin/windeployqt-qt5.exe /mingw64/lib/libvidstab.a'
+
+          "MSYS2_ROOT=C:\msys64" >> $env:GITHUB_ENV
+          "MINGW_BIN=C:\msys64\mingw64\bin" >> $env:GITHUB_ENV
 
       # 如果上一步挂了，我们这边看不到它的日志（Actions 日志接口需要鉴权，匿名 403）。
       # 把关键信息推到临时分支——分支内容匿名可读，这是唯一能远程排查的路子。
@@ -125,22 +132,13 @@ jobs:
                    "HEAD:refs/heads/ci-diag/$env:GITHUB_RUN_ID"
 
       # 不要从 `Get-Command bash` 反推 MSYS2 根目录：runner 上先命中 Git 自带的 bash。
-      # 在 MSYS2 shell 里用 cygpath 问它自己，结果写文件、再由 pwsh 读。
-      - name: 定位 MSYS2 路径
-        run: |
-          cygpath -w /mingw64/bin > mingw_bin.txt
-          cygpath -w / > msys_root.txt
-          cat mingw_bin.txt
-          cat msys_root.txt
-
-      - name: 读取 MSYS2 路径
+      # 上面的安装步骤已经确认了 C:\msys64 存在，路径直接用它，不再靠 shell 探测。
+      - name: 确认 MSYS2 路径
         shell: pwsh
         run: |
-          $bin  = (Get-Content mingw_bin.txt -Raw).Trim()
-          $root = (Get-Content msys_root.txt -Raw).Trim()
-          Write-Output "MINGW_BIN=$bin"
-          Write-Output "MSYS2_ROOT=$root"
-          if (-not (Test-Path (Join-Path $bin 'windeployqt-qt5.exe'))) {
+          Write-Output "MINGW_BIN=$env:MINGW_BIN"
+          Write-Output "MSYS2_ROOT=$env:MSYS2_ROOT"
+          if (-not (Test-Path (Join-Path $env:MINGW_BIN 'windeployqt-qt5.exe'))) {
             Write-Output '!!! 没有 windeployqt-qt5.exe（缺 mingw-w64-x86_64-qt5-tools？）'
             exit 1
           }
