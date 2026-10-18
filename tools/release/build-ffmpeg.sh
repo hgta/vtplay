@@ -51,9 +51,14 @@ for t in gcc g++ nasm pkg-config; do
     }
 done
 command -v mingw32-make >/dev/null || { echo '缺少 mingw32-make（mingw-w64-x86_64-make）' >&2; exit 1; }
-# 静态库：动态导入库（.dll.a）不能满足 -static，缺了就是链接期 undefined
+# 静态库：动态导入库（.dll.a）不能满足 -static，缺了就是链接期 undefined。
+# 包名逐个写出来——vidstab 的包名带点（mingw-w64-x86_64-vid.stab），写错会让 CI 卡在装依赖那步。
 for lib in libx264.a libx265.a libdav1d.a libvidstab.a; do
-    [ -f "/mingw64/lib/$lib" ] || { echo "缺少 /mingw64/lib/$lib —— 需要对应 -dev 包" >&2; exit 1; }
+    [ -f "/mingw64/lib/$lib" ] || {
+        echo "缺少 /mingw64/lib/$lib —— 装对应的开发包：" >&2
+        echo '  pacman -S mingw-w64-x86_64-libx264 mingw-w64-x86_64-x265 mingw-w64-x86_64-dav1d mingw-w64-x86_64-vid.stab' >&2
+        exit 1
+    }
 done
 
 mkdir -p "$CACHE" "$OUT"

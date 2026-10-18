@@ -66,7 +66,9 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          update: true
+          # update: true 会先跑一次全量 -Syu（几分钟，且偶尔因镜像抖动失败）。
+          # 这里只需要"装齐依赖"，不需要系统是最新——保持 update: false 更稳。
+          update: false
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
@@ -84,7 +86,9 @@ jobs:
             mingw-w64-x86_64-libx264
             mingw-w64-x86_64-x265
             mingw-w64-x86_64-dav1d
-            mingw-w64-x86_64-vidstab
+            # 包名带点：是这个包提供 libvidstab.a / vid.stab/libvidstab.h
+            # （写成 mingw-w64-x86_64-vidstab 会让 setup-msys2 直接失败——第一次就这么挂的）
+            mingw-w64-x86_64-vid.stab
 
       # 不要从 `Get-Command bash` 反推 MSYS2 根目录：runner 上先命中 Git 自带的 bash。
       # 在 MSYS2 shell 里用 cygpath 问它自己，结果写文件、再由 pwsh 读。
