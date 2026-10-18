@@ -27,6 +27,9 @@ permissions:
 
 jobs:
   windows-portable:
+    # 8.1 那条构建线的 tag 形如 v0.3.0-win81，由 release-win81.yml 处理；
+    # 这里必须排除，否则同一个 tag 会拉起 Qt6 的构建——而分支上是 Qt5 的 QML，必然失败。
+    if: ${{ !contains(github.ref_name, '-win81') }}
     runs-on: windows-latest
     defaults:
       run:

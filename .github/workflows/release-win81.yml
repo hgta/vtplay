@@ -1,0 +1,213 @@
+# 发布 Windows 8.1 x64 兼容版（Qt5 构建线）。
+#
+# 触发：推送形如 v0.3.0-win81 的 tag（主干用的是 v*，见 release.yml 里的排除条件）。
+#
+# 与主干的 release.yml 有两点结构性差异，都是被现实逼出来的：
+#   1. FFmpeg 要自己编（约 30~40 分钟）：MSYS2 现成的那个构建里有三项硬导入 Win10 API 的组件，
+#      在 8.1 上会加载失败。构建细节见 tools/release/build-ffmpeg.sh 顶部注释。
+#      产物用 actions/cache 缓存——同一个 ffmpeg 版本只需要编一次。
+#   2. 应用要用**自建的共享库**构建（build-app.ps1 负责把 PKG_CONFIG_PATH 指过去），
+#      否则 avcodec 仍会拉起那几个 DLL，应用启动即失败。
+#
+# 门禁分布：导入表门禁在 make_release.ps1 末尾（失败即 throw），
+# 部署完整性断言也在那里；这里的额外步骤只做「产物名与关键文件对不对」的复核。
+
+name: release-win81
+
+on:
+  push:
+    tags: ['v*-win81']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（例如 v0.3.0-win81）'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  FFMPEG_VERSION: '9.0.2'
+
+jobs:
+  windows-81-portable:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # tag 是 v0.3.0-win81，CMakeLists 里是 0.3.0；两处必须对得上，
+      # 否则会出现「tag 写 0.3.0-win81、内容其实是 0.2.0」的包。
+      - name: 校验版本号一致
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          $declared = (Select-String -Path CMakeLists.txt -Pattern 'project\(\s*\w+\s+VERSION\s+([0-9.]+)').Matches[0].Groups[1].Value
+          $tag = $env:RELEASE_TAG
+          $ver = $tag -replace '^v', '' -replace '-win81$', ''
+          Write-Output "CMakeLists: $declared   tag: $tag   -> version: $ver"
+          if ($declared -ne $ver) {
+            Write-Output "!!! 版本不一致：CMakeLists 是 $declared，tag 推出的是 $ver"
+            exit 1
+          }
+          if ($tag -notmatch '-win81$') {
+            Write-Output "!!! 这个 workflow 只处理 -win81 结尾的 tag（收到 $tag）"
+            exit 1
+          }
+          "VTPLAY_VERSION=$declared" >> $env:GITHUB_ENV
+          "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+          "CHANGELOG_KEY=$declared-win81" >> $env:GITHUB_ENV
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-nasm
+            mingw-w64-x86_64-qt5-base
+            mingw-w64-x86_64-qt5-declarative
+            mingw-w64-x86_64-qt5-quickcontrols
+            mingw-w64-x86_64-qt5-quickcontrols2
+            mingw-w64-x86_64-qt5-multimedia
+            mingw-w64-x86_64-qt5-tools
+            mingw-w64-x86_64-libx264
+            mingw-w64-x86_64-x265
+            mingw-w64-x86_64-dav1d
+            mingw-w64-x86_64-vidstab
+
+      # 不要从 `Get-Command bash` 反推 MSYS2 根目录：runner 上先命中 Git 自带的 bash。
+      # 在 MSYS2 shell 里用 cygpath 问它自己，结果写文件、再由 pwsh 读。
+      - name: 定位 MSYS2 路径
+        run: |
+          cygpath -w /mingw64/bin > mingw_bin.txt
+          cygpath -w / > msys_root.txt
+          cat mingw_bin.txt
+          cat msys_root.txt
+
+      - name: 读取 MSYS2 路径
+        shell: pwsh
+        run: |
+          $bin  = (Get-Content mingw_bin.txt -Raw).Trim()
+          $root = (Get-Content msys_root.txt -Raw).Trim()
+          Write-Output "MINGW_BIN=$bin"
+          Write-Output "MSYS2_ROOT=$root"
+          if (-not (Test-Path (Join-Path $bin 'windeployqt-qt5.exe'))) {
+            Write-Output '!!! 没有 windeployqt-qt5.exe（缺 mingw-w64-x86_64-qt5-tools？）'
+            exit 1
+          }
+          "MINGW_BIN=$bin"   >> $env:GITHUB_ENV
+          "MSYS2_ROOT=$root" >> $env:GITHUB_ENV
+
+      # 两个产物：静态 ffmpeg.exe + 应用链接用的共享库。约 30~40 分钟，所以缓存。
+      # 缓存命中时脚本会走「已存在则跳过」分支，但仍会把产物丢进空目录跑一遍导入表门禁。
+      - uses: actions/cache@v4
+        id: ffmpeg-cache
+        with:
+          path: third_party/win81
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-win81-${{ hashFiles('tools/release/build-ffmpeg.sh') }}
+
+      - name: 自建 FFmpeg（静态 exe + 共享库）
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tools/release/build-ffmpeg.ps1 `
+              -Msys2Root $env:MSYS2_ROOT `
+              -CacheDir (Join-Path $env:RUNNER_TEMP 'ffmpeg-cache') `
+              -FfmpegVersion $env:FFMPEG_VERSION *>&1
+          if ($LASTEXITCODE -ne 0) { Write-Output "build-ffmpeg 失败，退出码 $LASTEXITCODE"; exit 1 }
+
+      - name: 构建应用（Qt5 + 自建 FFmpeg）
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tools/release/build-app.ps1 `
+              -BuildDir build-win81 -Clean -Msys2Root $env:MSYS2_ROOT *>&1
+          if ($LASTEXITCODE -ne 0) { Write-Output "build-app 失败，退出码 $LASTEXITCODE"; exit 1 }
+
+      # 打包脚本末尾跑导入表门禁 + 部署完整性断言，不过就 throw
+      - name: 打包便携版
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tools/release/make_release.ps1 `
+              -QtBin $env:MINGW_BIN -BuildDir build-win81 *>&1
+          if ($LASTEXITCODE -ne 0) { Write-Output "make_release 失败，退出码 $LASTEXITCODE"; exit 1 }
+
+      - name: 产物复核
+        shell: pwsh
+        run: |
+          $dir = "dist/vtplay-$env:VTPLAY_VERSION-win81-x64"
+          $zip = "dist/vtplay-$env:VTPLAY_VERSION-win81-x64.zip"
+          if (-not (Test-Path $zip)) { Write-Output "missing $zip"; exit 1 }
+          # 这些是「缺了必然起不来」的：qwindows.dll 是平台插件，QtQuick.2 是 Qt5 的 QML 宿主目录
+          foreach ($f in @('vtplay.exe','qt.conf','ffmpeg.exe','ffmpeg.BUILD.txt',
+                           'avcodec-63.dll','platforms\qwindows.dll',
+                           'QtQuick.2\qmldir','QtQuick\Controls.2\qmldir')) {
+            if (-not (Test-Path (Join-Path $dir $f))) { Write-Output "!!! missing $f"; exit 1 }
+          }
+          $n = (Get-ChildItem $dir -Recurse -Include '*.exe','*.dll' -File).Count
+          Write-Output "二进制数: $n   体积: $([math]::Round((Get-Item $zip).Length/1MB,1)) MB"
+          Write-Output '产物复核通过'
+
+      # 运行器没有真实音频设备，播放起不来属环境限制，不阻断发布
+      # （完整播放验证在本地做：tools/release/verify_package.ps1）
+      - name: 冒烟测试（无界面启动）
+        shell: pwsh
+        continue-on-error: true
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $dir = "dist/vtplay-$env:VTPLAY_VERSION-win81-x64"
+          $log = Join-Path $env:LOCALAPPDATA 'VTPlay\VTPlay\vtplay.log'
+          if (Test-Path $log) { Remove-Item $log -Force }
+          $p = Start-Process -FilePath (Join-Path $dir 'vtplay.exe') -PassThru `
+                -WorkingDirectory $dir -RedirectStandardError (Join-Path $env:TEMP 'smoke.err')
+          Start-Sleep -Seconds 15
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          if (Test-Path $log) {
+            Get-Content $log -Encoding UTF8 | Select-Object -First 12 | ForEach-Object { Write-Output $_ }
+            if (@(Get-Content $log -Encoding UTF8 | Select-String '\[settings\] transcoder path=').Count -gt 0) {
+              Write-Output 'SMOKE OK'
+            } else { Write-Output 'SMOKE: 无启动行' }
+          } else { Write-Output 'SMOKE: 没有产生日志' }
+
+      # Release 说明取自 CHANGELOG 的 [0.3.0-win81] 段落，保持单一来源
+      - name: 抽取 Release 说明
+        shell: pwsh
+        run: |
+          $md = Get-Content CHANGELOG.md -Raw -Encoding UTF8
+          $pat = "(?ms)^##\s*\[$([regex]::Escape($env:CHANGELOG_KEY))\][^\n]*\n(.*?)(?=^##\s*\[|\z)"
+          $m = [regex]::Match($md, $pat)
+          $body = if ($m.Success) { $m.Groups[1].Value.Trim() }
+                  else { "见仓库 CHANGELOG.md 的 $env:CHANGELOG_KEY 段落。" }
+          $head = @(
+            'Windows 8.1 x64 便携版（Qt 5.15 构建线），解压后双击 `vtplay.exe` 即可，无需安装。',
+            '',
+            '功能与 `VTPlay ' + $env:VTPLAY_VERSION + '` 相同；包内自带 ffmpeg，导出与老片修复导出开箱可用。',
+            '',
+            '本包在打包时已通过两道门禁：包内全部二进制的导入表在 Win8.1 上可用、部署文件完整。',
+            '',
+            '---',
+            ''
+          )
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          (($head + @($body)) -join "`n") | Set-Content -Path dist/release-body-win81.md -Encoding UTF8
+          Get-Content dist/release-body-win81.md -Encoding UTF8 | Select-Object -First 8
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: VTPlay ${{ env.VTPLAY_VERSION }} — Windows 8.1
+          body_path: dist/release-body-win81.md
+          files: dist/vtplay-*-win81-x64.zip
+          draft: false
+          prerelease: false

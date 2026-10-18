@@ -64,6 +64,33 @@ cmake --build build
 - `build/src/tools/vtplay-export-check.exe <file>` — 导出链路自测
 - `build/src/tools/vtplay-diagnose-check.exe` — 源诊断自测（见「老片修复」）
 
+### Windows 8.1 线（`legacy/win81`）
+
+这条线的 FFmpeg **不是** MSYS2 的 `mingw-w64-x86_64-ffmpeg`，而是自建的，且分成两个产物。
+原因只有一条：MSYS2 那个构建的依赖闭包里，`librsvg-2-2.dll` / `libdovi.dll` 硬导入
+`bcryptprimitives!ProcessPrng`、`libSvtAv1Enc-4.dll` 硬导入 `KERNEL32!SetThreadDescription`，
+**这两个 API 在 Win8.1 上不存在**。补文件救不了（缺的是函数），所以只能不把它们编进去。
+
+```powershell
+# 1. 自建 FFmpeg（源码来自 ffmpeg.org，缓存到 D:\dev\cache）
+powershell -File tools\release\build-ffmpeg.ps1        # 约 20 分钟
+
+# 2. 用自建的共享库构建应用（PKG_CONFIG_PATH 由脚本负责指过去）
+powershell -File tools\release\build-app.ps1 -BuildDir build-win81 -Clean
+```
+
+| 产物 | 用途 | 链接方式 | 许可证 |
+|---|---|---|---|
+| `third_party\win81\ffmpeg.exe` | 导出/诊断的**子进程** | 静态（x264/x265/dav1d/vidstab 全进 exe） | GPL-2.0-or-later（含 x264/x265） |
+| `third_party\win81\ffmpeg-shared\bin\*.dll` | 应用**自己播放**时链接 | 动态（`--disable-autodetect`，只留 dav1d） | LGPL-2.1-or-later |
+
+两套都是 `--disable-autodetect`：其余外部库（svt-av1 / rsvg / placebo / vulkan / ass / freetype…）一律不要。
+`build-ffmpeg.ps1` 收尾会把 `ffmpeg.exe` 丢进一张空目录跑一遍依赖门禁（空目录是关键：
+门禁有「包内自带同名 DLL 即满足」的豁免，原地扫等于自欺）。
+
+> 打包时 `make_release.ps1` 对 win81 线**只接受**这个自建 exe：找不到就报错退出，
+> 不会悄悄回退到 MSYS2 那个（回退等于把已知会在目标机挂掉的东西打进包）。
+
 ### Linux — apt
 
 ```bash
@@ -114,6 +141,11 @@ $env:PATH = "D:\dev\msys64\mingw64\bin;" + $env:PATH
 - 分发随附的 ffmpeg 时，只需附上该 ffmpeg 的许可证与源码获取方式
 - 若将来希望以 LGPL/闭源方式分发应用本体，可换用 LGPL 构建的 FFmpeg
   （需自行编译，不含 x264/x265 等 GPL 组件）
+
+**`legacy/win81` 线已经这样做了**（原因见上文「Windows 8.1 线」）：应用链接的是自建的
+`--disable-autodetect` 共享库（LGPL-2.1-or-later，无 x264/x265），GPL 只存在于随包的
+`ffmpeg.exe`（含 x264/x265 的静态构建），而它是以独立子进程方式调用的。
+随包的 `ffmpeg.BUILD.txt` 记录该 exe 的版本、configure 行与 sha256。
 
 **Qt** 以 LGPLv3 使用（动态链接）。
 
@@ -265,6 +297,9 @@ powershell -File tools\release\verify_package.ps1 -Media <一个测试视频>
 | `--compiler-runtime` + 兜底复制 | 缺 `libstdc++-6` / `libgcc_s_seh-1` / `libwinpthread-1`，双击无反应 |
 | 写 `qt.conf` | QML 导入路径指向编译期前缀，换机器报 `module "QtQuick.Controls.Basic" is not installed` |
 | 依赖闭包收集 | `windeployqt` 不追**传递**依赖。缺 `zlib1`/`pcre2`/`icu`/`harfbuzz` 以及 FFmpeg 那串编解码库时，加载器在 `main()` 之前就失败——**连日志都不会产生** |
+| `windeployqt --no-angle`（Qt5 线） | 没装 ANGLE 时它发现 `libGLESv2.dll` 不存在就**中途退出**：Qt 的 DLL 拷完了，`plugins\` 与 QML 模块一个不留（包能过门禁却双击无反应） |
+| `qt.conf` 的 `Qml2Imports` 按大版本写 | Qt5 的 QML 模块在包**根目录**、Qt6 在 `qml\`。写错只在换机器时暴露成 `module "QtQuick" is not installed` |
+| 部署完整性断言 | 门禁只回答「导入在目标系统可用吗」，不回答「东西齐不齐」。缺 `platforms\qwindows.dll` 时前者照样绿 |
 | 随包 `ffmpeg.exe` | 导出功能需要用户自己装 ffmpeg |
 
 **验证判据不是「进程还活着」**：缺 DLL 或缺 QML 模块时，程序可能弹个错误对话框干等，

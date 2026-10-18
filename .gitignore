@@ -1,8 +1,14 @@
 # Build outputs
 build/
+# legacy/win81 分支用 build-win81/，与主干 Qt6 的 build/ 并存
+# （注意：.gitignore 不支持行尾注释，写成 `build-*/  # ...` 会让整行变成字面量而不生效）
+build-*/
 out/
 cmake-build-*/
 dist/
+# 自建产物的落地目录（工具见 tools/release/build-ffmpeg.ps1）：不进版本库，
+# 由脚本可复现地重建；ffmpeg.BUILD.txt 里的 sha256 只对应本机这一次构建
+third_party/win81/
 *.o
 *.obj
 *.exe

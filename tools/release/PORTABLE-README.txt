@@ -38,3 +38,5 @@ VTPlay {VERSION} — Windows 便携版
 ----
 本程序以 Qt（LGPLv3）构建。随包的 ffmpeg 为 GPL 构建，以独立进程方式调用，
 不构成衍生作品。两者的许可证全文见 Qt 与 FFmpeg 项目官网。
+若目录里有 ffmpeg.BUILD.txt，它记录了这个 ffmpeg.exe 的来源：版本、configure
+参数、编译器与 sha256（Windows 8.1 版是自己编的，没有现成安装包可查）。
