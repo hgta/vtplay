@@ -98,20 +98,23 @@ jobs:
           & $bash -lc 'pacman -Q mingw-w64-x86_64-qt5-tools mingw-w64-x86_64-vid.stab'
           & $bash -lc 'ls -l /mingw64/bin/windeployqt-qt5.exe /mingw64/lib/libvidstab.a'
 
-          "MSYS2_ROOT=C:\msys64" >> $env:GITHUB_ENV
-          "MINGW_BIN=C:\msys64\mingw64\bin" >> $env:GITHUB_ENV
+          # 这两个路径不再通过 GITHUB_ENV 往下传（上一轮传过来是空串），
+          # 后面每一步都用字面量 'C:\msys64'。
 
       # 不要从 `Get-Command bash` 反推 MSYS2 根目录：runner 上先命中 Git 自带的 bash。
       # 上面的安装步骤已经确认了 C:\msys64 存在，路径直接用它，不再靠 shell 探测。
       - name: 确认 MSYS2 路径
         shell: pwsh
         run: |
-          Write-Output "MINGW_BIN=$env:MINGW_BIN"
-          Write-Output "MSYS2_ROOT=$env:MSYS2_ROOT"
-          if (-not (Test-Path (Join-Path $env:MINGW_BIN 'windeployqt-qt5.exe'))) {
-            Write-Output '!!! 没有 windeployqt-qt5.exe（缺 mingw-w64-x86_64-qt5-tools？）'
-            exit 1
+          $bin = 'C:\msys64\mingw64\bin'
+          Write-Output "MINGW_BIN=$bin"
+          foreach ($t in 'windeployqt-qt5.exe','objdump.exe','pkg-config.exe','cmake.exe','ninja.exe') {
+            if (-not (Test-Path (Join-Path $bin $t))) {
+              Write-Output "!!! 缺 $t（装依赖那步没装全？）"
+              exit 1
+            }
           }
+          Write-Output '工具链齐了'
           "MINGW_BIN=$bin"   >> $env:GITHUB_ENV
           "MSYS2_ROOT=$root" >> $env:GITHUB_ENV
 
@@ -128,8 +131,11 @@ jobs:
         run: |
           # 输出 tee 到文件：Actions 日志接口要鉴权、我们看不到，只能靠失败诊断把它推出来
           $log = Join-Path $env:RUNNER_TEMP 'step-ffmpeg.log'
+          # 路径写字面量，不靠 GITHUB_ENV 传：那一套在上一轮里传过来是空串，
+          # 报错落在 Join-Path 上（"Cannot bind argument to parameter 'Path' because
+          # it is an empty string"），排查了半天。runner 的 MSYS2 就在 C:\msys64。
           & pwsh -NoProfile -File tools/release/build-ffmpeg.ps1 `
-              -Msys2Root $env:MSYS2_ROOT `
+              -Msys2Root 'C:\msys64' `
               -CacheDir (Join-Path $env:RUNNER_TEMP 'ffmpeg-cache') `
               -FfmpegVersion $env:FFMPEG_VERSION *>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { Write-Output "build-ffmpeg 失败，退出码 $LASTEXITCODE"; exit 1 }
@@ -139,7 +145,7 @@ jobs:
         run: |
           $log = Join-Path $env:RUNNER_TEMP 'step-app.log'
           & pwsh -NoProfile -File tools/release/build-app.ps1 `
-              -BuildDir build-win81 -Clean -Msys2Root $env:MSYS2_ROOT *>&1 | Tee-Object -FilePath $log
+              -BuildDir build-win81 -Clean -Msys2Root 'C:\msys64' *>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { Write-Output "build-app 失败，退出码 $LASTEXITCODE"; exit 1 }
 
       # 打包脚本末尾跑导入表门禁 + 部署完整性断言，不过就 throw
@@ -148,7 +154,7 @@ jobs:
         run: |
           $log = Join-Path $env:RUNNER_TEMP 'step-release.log'
           & pwsh -NoProfile -File tools/release/make_release.ps1 `
-              -QtBin $env:MINGW_BIN -BuildDir build-win81 *>&1 | Tee-Object -FilePath $log
+              -QtBin 'C:\msys64\mingw64\bin' -BuildDir build-win81 *>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { Write-Output "make_release 失败，退出码 $LASTEXITCODE"; exit 1 }
 
       - name: 产物复核

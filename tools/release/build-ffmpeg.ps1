@@ -26,6 +26,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# 空串会一路传下去，最后炸在 Join-Path 上（报错还看不出是"路径没传进来"）。
+# CI 上就踩过：从 GITHUB_ENV 传过来的变量是空的，报错落在 Join-Path 的参数绑定上。
+if ([string]::IsNullOrWhiteSpace($Msys2Root)) {
+    throw '-Msys2Root 为空。本地一般用它默认值，CI 里请显式写 -Msys2Root C:\msys64'
+}
+
 if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
     # MSYS2 工具会往 stderr 打进度信息（curl/tar 都是），pwsh 7 下会被当成错误
     $PSNativeCommandUseErrorActionPreference = $false

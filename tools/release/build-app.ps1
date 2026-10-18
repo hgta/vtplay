@@ -22,6 +22,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# 空串会一路传下去，最后炸在 Join-Path 上（报错还看不出是"路径没传进来"）
+if ([string]::IsNullOrWhiteSpace($Msys2Root)) {
+    throw '-Msys2Root 为空。CI 里请显式写 -Msys2Root C:\msys64'
+}
+
 if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
     $PSNativeCommandUseErrorActionPreference = $false
 }
