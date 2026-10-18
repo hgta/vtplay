@@ -66,9 +66,13 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          # update: true 会先跑一次全量 -Syu（几分钟，且偶尔因镜像抖动失败）。
-          # 这里只需要"装齐依赖"，不需要系统是最新——保持 update: false 更稳。
-          update: false
+          # update: true 先跑一次 -Syu（几分钟），换来的是一份新鲜的数据库。
+          # 别改成 false：runner 上预装的 MSYS2 数据库很可能已经过期，
+          # 那样 pacman -S 会以「target not found」失败（本次就踩了）。
+          update: true
+          # MINGW64 已被标记为 deprecated（会打一条 warning），这里显式接受：
+          # 这条构建线必须用 msvcrt 的 mingw64 —— UCRT64/CLANG64 没有 Qt5。
+          suppress-deprecation-warnings: msystem-mingw64
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
@@ -89,6 +93,36 @@ jobs:
             # 包名带点：是这个包提供 libvidstab.a / vid.stab/libvidstab.h
             # （写成 mingw-w64-x86_64-vidstab 会让 setup-msys2 直接失败——第一次就这么挂的）
             mingw-w64-x86_64-vid.stab
+
+      # 如果上一步挂了，我们这边看不到它的日志（Actions 日志接口需要鉴权，匿名 403）。
+      # 把关键信息推到临时分支——分支内容匿名可读，这是唯一能远程排查的路子。
+      # 用法：失败的 run 结束后执行
+      #     git fetch origin ci-diag/<run_id> && git show FETCH_HEAD:ci-diag.txt
+      # 排查完记得删掉该分支。
+      - name: 失败诊断（推临时分支）
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $lines = @("run: $env:GITHUB_RUN_ID", "ref: $env:GITHUB_REF", "sha: $env:GITHUB_SHA")
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          if (Test-Path $bash) {
+            $lines += '--- pacman -Q（前 60 行）---'
+            $lines += (& $bash -lc 'pacman -Q 2>&1 | head -60')
+            $lines += '--- /var/log/pacman.log（末 100 行）---'
+            $lines += (& $bash -lc 'tail -100 /var/log/pacman.log 2>&1')
+          } else {
+            $lines += "没有 $bash —— MSYS2 根本没装起来"
+          }
+          $lines -join "`n" | Set-Content ci-diag.txt -Encoding UTF8
+          git config user.name  'ci-diag'
+          git config user.email 'ci-diag@local'
+          git checkout -b "ci-diag/$env:GITHUB_RUN_ID"
+          git add ci-diag.txt
+          git commit -m "ci-diag: run $env:GITHUB_RUN_ID"
+          git push "https://x-access-token:$env:GH_TOKEN@github.com/$env:GITHUB_REPOSITORY.git" `
+                   "HEAD:refs/heads/ci-diag/$env:GITHUB_RUN_ID"
 
       # 不要从 `Get-Command bash` 反推 MSYS2 根目录：runner 上先命中 Git 自带的 bash。
       # 在 MSYS2 shell 里用 cygpath 问它自己，结果写文件、再由 pwsh 读。
