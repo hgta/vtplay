@@ -101,36 +101,6 @@ jobs:
           "MSYS2_ROOT=C:\msys64" >> $env:GITHUB_ENV
           "MINGW_BIN=C:\msys64\mingw64\bin" >> $env:GITHUB_ENV
 
-      # 如果上一步挂了，我们这边看不到它的日志（Actions 日志接口需要鉴权，匿名 403）。
-      # 把关键信息推到临时分支——分支内容匿名可读，这是唯一能远程排查的路子。
-      # 用法：失败的 run 结束后执行
-      #     git fetch origin ci-diag/<run_id> && git show FETCH_HEAD:ci-diag.txt
-      # 排查完记得删掉该分支。
-      - name: 失败诊断（推临时分支）
-        if: failure()
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $lines = @("run: $env:GITHUB_RUN_ID", "ref: $env:GITHUB_REF", "sha: $env:GITHUB_SHA")
-          $bash = 'C:\msys64\usr\bin\bash.exe'
-          if (Test-Path $bash) {
-            $lines += '--- pacman -Q（前 60 行）---'
-            $lines += (& $bash -lc 'pacman -Q 2>&1 | head -60')
-            $lines += '--- /var/log/pacman.log（末 100 行）---'
-            $lines += (& $bash -lc 'tail -100 /var/log/pacman.log 2>&1')
-          } else {
-            $lines += "没有 $bash —— MSYS2 根本没装起来"
-          }
-          $lines -join "`n" | Set-Content ci-diag.txt -Encoding UTF8
-          git config user.name  'ci-diag'
-          git config user.email 'ci-diag@local'
-          git checkout -b "ci-diag/$env:GITHUB_RUN_ID"
-          git add ci-diag.txt
-          git commit -m "ci-diag: run $env:GITHUB_RUN_ID"
-          git push "https://x-access-token:$env:GH_TOKEN@github.com/$env:GITHUB_REPOSITORY.git" `
-                   "HEAD:refs/heads/ci-diag/$env:GITHUB_RUN_ID"
-
       # 不要从 `Get-Command bash` 反推 MSYS2 根目录：runner 上先命中 Git 自带的 bash。
       # 上面的安装步骤已经确认了 C:\msys64 存在，路径直接用它，不再靠 shell 探测。
       - name: 确认 MSYS2 路径
@@ -247,3 +217,38 @@ jobs:
           files: dist/vtplay-*-win81-x64.zip
           draft: false
           prerelease: false
+
+      # 失败时把关键信息推到临时分支：Actions 日志接口需要鉴权（匿名 403），
+      # 而分支内容匿名可读——这是唯一能从外部排查的办法。必须放在**最后**：
+      # if: failure() 只看它之前的步骤。
+      # 用法：git fetch origin ci-diag/<run_id> && git show FETCH_HEAD:ci-diag.txt
+      # 排查完删掉该分支。
+      - name: 失败诊断（推临时分支）
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $lines = @("run: $env:GITHUB_RUN_ID", "ref: $env:GITHUB_REF", "sha: $env:GITHUB_SHA")
+          $cache = Join-Path $env:RUNNER_TEMP 'ffmpeg-cache'
+          foreach ($f in 'ffmpeg-configure.log','ffmpeg-build.log',
+                         'ffmpeg-shared-configure.log','ffmpeg-shared-build.log') {
+            $p = Join-Path $cache $f
+            if (Test-Path $p) {
+              $lines += "--- $f（末 60 行）---"
+              $lines += (Get-Content $p -Tail 60 -Encoding UTF8)
+            }
+          }
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          if (Test-Path $bash) {
+            $lines += '--- pacman -Q（前 40 行）---'
+            $lines += (& $bash -lc 'pacman -Q 2>&1 | head -40')
+          }
+          $lines -join "`n" | Set-Content ci-diag.txt -Encoding UTF8
+          git config user.name  'ci-diag'
+          git config user.email 'ci-diag@local'
+          git checkout -b "ci-diag/$env:GITHUB_RUN_ID"
+          git add ci-diag.txt
+          git commit -m "ci-diag: run $env:GITHUB_RUN_ID"
+          git push "https://x-access-token:$env:GH_TOKEN@github.com/$env:GITHUB_REPOSITORY.git" `
+                   "HEAD:refs/heads/ci-diag/$env:GITHUB_RUN_ID"
