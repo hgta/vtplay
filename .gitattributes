@@ -1,0 +1,15 @@
+# MSYS2 的 bash 执行带 CRLF 的脚本会在第一行就失败（`set -euo pipefail\r` 不是合法命令），
+# 而 Windows 上 core.autocrlf 默认是 true、Windows runner 也是——不显式声明，
+# 本地写好的脚本推上去再拉下来就废了（CI 上表现为一堆 $'\r': command not found）。
+*.sh      text eol=lf
+
+# PowerShell 反过来：5.1 对 CRLF 最稳，且这些文件带 BOM（GBK 解析问题的解药）
+*.ps1     text eol=crlf
+
+*.md      text
+*.qml     text
+*.cpp     text
+*.h       text
+*.txt     text
+*.yml     text
+*.json    text
