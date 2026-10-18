@@ -126,25 +126,29 @@ jobs:
       - name: 自建 FFmpeg（静态 exe + 共享库）
         shell: pwsh
         run: |
+          # 输出 tee 到文件：Actions 日志接口要鉴权、我们看不到，只能靠失败诊断把它推出来
+          $log = Join-Path $env:RUNNER_TEMP 'step-ffmpeg.log'
           & pwsh -NoProfile -File tools/release/build-ffmpeg.ps1 `
               -Msys2Root $env:MSYS2_ROOT `
               -CacheDir (Join-Path $env:RUNNER_TEMP 'ffmpeg-cache') `
-              -FfmpegVersion $env:FFMPEG_VERSION *>&1
+              -FfmpegVersion $env:FFMPEG_VERSION *>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { Write-Output "build-ffmpeg 失败，退出码 $LASTEXITCODE"; exit 1 }
 
       - name: 构建应用（Qt5 + 自建 FFmpeg）
         shell: pwsh
         run: |
+          $log = Join-Path $env:RUNNER_TEMP 'step-app.log'
           & pwsh -NoProfile -File tools/release/build-app.ps1 `
-              -BuildDir build-win81 -Clean -Msys2Root $env:MSYS2_ROOT *>&1
+              -BuildDir build-win81 -Clean -Msys2Root $env:MSYS2_ROOT *>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { Write-Output "build-app 失败，退出码 $LASTEXITCODE"; exit 1 }
 
       # 打包脚本末尾跑导入表门禁 + 部署完整性断言，不过就 throw
       - name: 打包便携版
         shell: pwsh
         run: |
+          $log = Join-Path $env:RUNNER_TEMP 'step-release.log'
           & pwsh -NoProfile -File tools/release/make_release.ps1 `
-              -QtBin $env:MINGW_BIN -BuildDir build-win81 *>&1
+              -QtBin $env:MINGW_BIN -BuildDir build-win81 *>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { Write-Output "make_release 失败，退出码 $LASTEXITCODE"; exit 1 }
 
       - name: 产物复核
@@ -231,12 +235,22 @@ jobs:
         run: |
           $lines = @("run: $env:GITHUB_RUN_ID", "ref: $env:GITHUB_REF", "sha: $env:GITHUB_SHA")
           $cache = Join-Path $env:RUNNER_TEMP 'ffmpeg-cache'
-          foreach ($f in 'ffmpeg-configure.log','ffmpeg-build.log',
-                         'ffmpeg-shared-configure.log','ffmpeg-shared-build.log') {
-            $p = Join-Path $cache $f
+          # 步骤自身的输出（tee 出来的）优先，它包含脚本自己打的前置检查报错
+          $stepLogs = @(
+            (Join-Path $env:RUNNER_TEMP 'step-ffmpeg.log'),
+            (Join-Path $env:RUNNER_TEMP 'step-app.log'),
+            (Join-Path $env:RUNNER_TEMP 'step-release.log'),
+            (Join-Path $cache 'ffmpeg-configure.log'),
+            (Join-Path $cache 'ffmpeg-build.log'),
+            (Join-Path $cache 'ffmpeg-shared-configure.log'),
+            (Join-Path $cache 'ffmpeg-shared-build.log')
+          )
+          foreach ($p in $stepLogs) {
             if (Test-Path $p) {
-              $lines += "--- $f（末 60 行）---"
-              $lines += (Get-Content $p -Tail 60 -Encoding UTF8)
+              $lines += "--- $(Split-Path $p -Leaf)（末 120 行）---"
+              $lines += (Get-Content $p -Tail 120 -Encoding UTF8)
+            } else {
+              $lines += "--- $(Split-Path $p -Leaf): 不存在 ---"
             }
           }
           $bash = 'C:\msys64\usr\bin\bash.exe'
