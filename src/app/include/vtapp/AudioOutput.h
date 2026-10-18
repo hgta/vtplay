@@ -2,7 +2,8 @@
 
 #include <QObject>
 #include <QIODevice>
-#include <QAudioSink>
+// Qt5 的对应类是 QAudioOutput（Qt6 才拆出 QAudioSink）。拉模式 start(QIODevice*) 两边都有。
+#include <QAudioOutput>
 #include <QAudioFormat>
 
 #include <vector>
@@ -11,8 +12,8 @@ namespace vtcore { class MediaPipeline; }
 
 namespace vtapp {
 
-/// 基于 QAudioSink 的 PCM 拉取器。从管线取音频帧、写入设备，并把"已播放字节数"
-/// 折算成主时钟 PTS 反馈给 MediaPipeline（音频主时钟同步）。
+/// 基于 QAudioOutput（Qt6 下为 QAudioSink）的 PCM 拉取器。从管线取音频帧、写入设备，
+/// 并把"已播放字节数"折算成主时钟 PTS 反馈给 MediaPipeline（音频主时钟同步）。
 class AudioOutput : public QObject {
     Q_OBJECT
 public:
@@ -27,13 +28,13 @@ private:
     struct PcmDevice : public QIODevice {
         AudioOutput* out;
         explicit PcmDevice(AudioOutput* o) : out(o) {
-            // QAudioSink 拉模式要求设备处于打开且可读状态
+            // 拉模式（Qt6 QAudioSink / Qt5 QAudioOutput）要求设备处于打开且可读状态
             open(QIODevice::ReadOnly);
         }
         qint64 readData(char* data, qint64 maxlen) override;
         qint64 writeData(const char*, qint64) override { return -1; }
         bool isSequential() const override { return true; }
-        // 实时音频源：必须报告"总有数据可读"，否则 QAudioSink 拉模式
+        // 实时音频源：必须报告"总有数据可读"，否则拉模式
         // 会认为无数据可用而永不调用 readData（导致完全无声）。
         qint64 bytesAvailable() const override {
             return 64 * 1024 + QIODevice::bytesAvailable();
@@ -48,7 +49,7 @@ private:
     };
 
     QScopedPointer<PcmDevice>    device_;
-    QScopedPointer<QAudioSink>   sink_;
+    QScopedPointer<QAudioOutput> sink_;
     vtcore::MediaPipeline*       pipeline_ = nullptr;
     double volume_ = 1.0;
     bool muted_ = false;

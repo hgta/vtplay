@@ -1,4 +1,4 @@
-import QtQuick
+import QtQuick 2.15
 
 /// 扁平按钮：全应用统一的深色按钮外观。
 /// 为什么不直接用 QtQuick.Controls 的 Button：Basic 样式是浅色主题，

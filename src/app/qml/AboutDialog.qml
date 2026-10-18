@@ -1,6 +1,6 @@
-import QtQuick
-import QtQuick.Layouts
-import QtQuick.Controls
+import QtQuick 2.15
+import QtQuick.Layouts 1.15
+import QtQuick.Controls 2.15
 import VTPlay 1.0
 
 /// 关于：版本、构建、运行环境与许可说明。
@@ -58,7 +58,7 @@ Dialog {
                 Image {
                     id: aboutLogo
                     anchors.fill: parent
-                    source: "qrc:/qt/qml/VTPlay/brand/logo.png"
+                    source: "qrc:/VTPlay/brand/logo.png"
                     fillMode: Image.PreserveAspectFit
                     smooth: true
                 }

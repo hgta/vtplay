@@ -1,6 +1,7 @@
 #include "FilmDiagnosis.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -439,7 +440,8 @@ void FilmDiagnosis::start(const QString& input, double durationSec, int srcW, in
 
     if (!proc_) {
         proc_ = std::make_unique<QProcess>(this);
-        connect(proc_.get(), &QProcess::finished, this,
+        // Qt5：finished 有重载，需用 QOverload 消除歧义（Qt6 只剩一个，故原来不用写）
+        connect(proc_.get(), QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
                 [this](int code, QProcess::ExitStatus) { onProcessFinished(code); });
     }
 
@@ -647,8 +649,8 @@ void FilmDiagnosis::onProcessFinished(int exitCode) {
     if (stepTimedOut_) return;
     if (cancelRequested_) return;
 
-    stepStderr_ += QString::fromLocal8Bit(proc_->readAllStandardError());
-    stepStderr_ += QString::fromLocal8Bit(proc_->readAllStandardOutput());
+    stepStderr_ += QString::fromUtf8(proc_->readAllStandardError());
+    stepStderr_ += QString::fromUtf8(proc_->readAllStandardOutput());
 
     // 单项失败只是让该项降级为「未知」，绝不中断整体诊断
     if (exitCode != 0) {

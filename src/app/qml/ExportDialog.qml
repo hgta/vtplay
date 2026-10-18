@@ -1,7 +1,9 @@
-import QtQuick
-import QtQuick.Controls.Basic
-import QtQuick.Layouts
-import QtQuick.Dialogs
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
+// 见 Main.qml 的说明：Qt5 的 Dialogs 1.3 自带 `Dialog`，会遮蔽 Controls 的 `Dialog`，
+// 导致本文件的根 Dialog 失去 footer 等属性。用别名导入避免歧义。
+import QtQuick.Dialogs 1.3 as NativeDialogs
 import VTPlay 1.0
 
 /// 导出/转换对话框。
@@ -88,14 +90,15 @@ Dialog {
         }
     }
 
-    FileDialog {
+    NativeDialogs.FileDialog {
         id: saveDialog
         title: "选择输出位置"
-        fileMode: FileDialog.SaveFile
+        // Qt5 的 QtQuick.Dialogs 1.3 没有 fileMode，"另存为"用 selectExisting: false 表达
+        selectExisting: false
         defaultSuffix: "mp4"
         nameFilters: ["MP4 视频 (*.mp4)"]
         onAccepted: {
-            dlg.outputPath = player.localPathFromUrl(selectedFile)
+            dlg.outputPath = player.localPathFromUrl(fileUrl)
             dlg.userPickedPath = true
         }
     }

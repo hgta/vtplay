@@ -19,7 +19,7 @@ target_include_directories(vtplay-export-check PRIVATE
     ${CMAKE_SOURCE_DIR}/src/app/include
     ${CMAKE_SOURCE_DIR}/src/app/include/vtapp
 )
-target_link_libraries(vtplay-export-check PRIVATE vtcore Qt6::Core)
+target_link_libraries(vtplay-export-check PRIVATE vtcore Qt5::Core)
 set_target_properties(vtplay-export-check PROPERTIES
     AUTOMOC ON
     WIN32_EXECUTABLE FALSE
@@ -43,7 +43,7 @@ target_include_directories(vtplay-diagnose-check PRIVATE
     ${CMAKE_SOURCE_DIR}/src/app/include
     ${CMAKE_SOURCE_DIR}/src/app/include/vtapp
 )
-target_link_libraries(vtplay-diagnose-check PRIVATE vtcore Qt6::Core)
+target_link_libraries(vtplay-diagnose-check PRIVATE vtcore Qt5::Core)
 set_target_properties(vtplay-diagnose-check PROPERTIES
     AUTOMOC ON
     WIN32_EXECUTABLE FALSE

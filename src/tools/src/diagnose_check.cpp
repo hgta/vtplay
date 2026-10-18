@@ -522,11 +522,15 @@ void selfTest() {
         // 没有任何阶段完成时，权重保持不变
         QList<bool> done;
         for (int i = 0; i < p.stages.size(); ++i) done << false;
-        const QList<double> same = reweightStages(w, QList<double>(w.size(), 0.0), done);
+        // Qt5 的 QList 没有 (size, value) 构造函数（Qt6 才有），改用显式填充
+        QList<double> noActual;
+        for (int i = 0; i < w.size(); ++i) noActual << 0.0;
+        const QList<double> same = reweightStages(w, noActual, done);
         check(same == w, QStringLiteral("无已完成阶段时权重不变"));
 
         // 第一个阶段实测远慢于估计 → 剩余时间估计被同步放大
-        QList<double> actual(w.size(), 0.0);
+        QList<double> actual;
+        for (int i = 0; i < w.size(); ++i) actual << 0.0;
         actual[0] = w[0] * 30.0;          // 实测是初值的 30 倍
         done[0] = true;
         const QList<double> re = reweightStages(w, actual, done);

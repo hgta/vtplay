@@ -210,7 +210,7 @@ void RestoreRunner::start(const RestorePlan& plan, const QString& input, const Q
         d_->proc = std::make_unique<QProcess>(this);
         connect(d_->proc.get(), &QProcess::readyReadStandardOutput, this, &RestoreRunner::onStdout);
         connect(d_->proc.get(), &QProcess::readyReadStandardError, this, [this]() {
-            const QString chunk = QString::fromLocal8Bit(d_->proc->readAllStandardError());
+            const QString chunk = QString::fromUtf8(d_->proc->readAllStandardError());
             for (const QString& l : chunk.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
                 const QString t = l.trimmed();
                 if (t.isEmpty()) continue;
@@ -218,7 +218,8 @@ void RestoreRunner::start(const RestorePlan& plan, const QString& input, const Q
                 while (d_->errTail.size() > 8) d_->errTail.removeFirst();
             }
         });
-        connect(d_->proc.get(), &QProcess::finished, this,
+        // Qt5：finished 有重载，需用 QOverload 消除歧义（Qt6 只剩一个，故原来不用写）
+        connect(d_->proc.get(), QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
                 [this](int code, QProcess::ExitStatus) { onProcessFinished(code); });
     }
 
@@ -366,7 +367,7 @@ void RestoreRunner::runMainPass() {
 }
 
 void RestoreRunner::onStdout() {
-    d_->outBuf += QString::fromLocal8Bit(d_->proc->readAllStandardOutput());
+    d_->outBuf += QString::fromUtf8(d_->proc->readAllStandardOutput());
     int idx;
     while ((idx = d_->outBuf.indexOf(QLatin1Char('\n'))) >= 0) {
         const QString line = d_->outBuf.left(idx).trimmed();
@@ -484,7 +485,7 @@ QString RestoreRunner::renderPreview(const RestorePlan& plan, const QString& inp
     }
     if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
         return QStringLiteral("预览渲染失败：%1")
-            .arg(QString::fromLocal8Bit(p.readAllStandardError()).right(400));
+            .arg(QString::fromUtf8(p.readAllStandardError()).right(400));
     }
     if (QFileInfo::exists(outPng)) return QString();
 
@@ -492,7 +493,7 @@ QString RestoreRunner::renderPreview(const RestorePlan& plan, const QString& inp
     // 此时 ffmpeg 会明确说 "Output file is empty, nothing was encoded"。
     // 而上面只在 exitCode != 0 时才读 stderr——恰恰把唯一能解释原因的那句话丢掉了，
     // 界面只剩一句"未生成文件"，对判断毫无帮助（实测踩过）。
-    const QString err = QString::fromLocal8Bit(p.readAllStandardError());
+    const QString err = QString::fromUtf8(p.readAllStandardError());
     if (err.contains(QStringLiteral("nothing was encoded"))) {
         return QStringLiteral("该时间点没有画面（可能已超出片长）");
     }

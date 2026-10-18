@@ -1,4 +1,4 @@
-import QtQuick
+import QtQuick 2.15
 
 /// 深色音量滑块。
 /// 不用 QtQuick.Controls 的 Slider：Basic 样式是浅色主题，放在深色控制条上

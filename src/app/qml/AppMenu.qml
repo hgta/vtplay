@@ -1,7 +1,7 @@
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
-import QtQuick.Window
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
+import QtQuick.Window 2.15
 import VTPlay 1.0
 
 /// 主菜单（两级）：顶级只有「文件 / 播放 / 视图 / 帮助」，各项展开为子菜单。

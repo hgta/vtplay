@@ -1,7 +1,9 @@
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Dialogs
-import QtQuick.Layouts
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+// 见 Main.qml 的说明：Qt5 的 Dialogs 1.3 自带 `Dialog`，会遮蔽 Controls 的 `Dialog`，
+// 导致本文件的根 Dialog 失去 footer 等属性。用别名导入避免歧义。
+import QtQuick.Dialogs 1.3 as NativeDialogs
+import QtQuick.Layouts 1.15
 import VTPlay 1.0
 
 /// 设置：转码器（ffmpeg）与截图保存位置。
@@ -200,16 +202,24 @@ Dialog {
 
     // ---------------------------------------------------------------- 文件选择
 
-    FileDialog {
+    NativeDialogs.FileDialog {
         id: ffmpegDialog
         title: "选择 ffmpeg 可执行文件"
         nameFilters: ["可执行文件 (*.exe)", "所有文件 (*)"]
-        onAccepted: player.setFfmpegPath(player.localPathFromUrl(selectedFile))
+        // Qt5：结果属性是 fileUrl（Qt6 为 selectedFile 字符串）
+        onAccepted: player.setFfmpegPath(player.localPathFromUrl(fileUrl))
     }
 
-    FolderDialog {
+    NativeDialogs.FileDialog {
         id: shotDirDialog
         title: "选择截图保存目录"
-        onAccepted: player.setScreenshotDirectory(player.localPathFromUrl(selectedFolder))
+        // Qt5 没有 FolderDialog（Qt6 才加），用 FileDialog 的 selectFolder 模式代替。
+        // 结果放在哪个属性上，不同 Qt5 小版本实现不一致（folder / fileUrl），
+        // 因此取非空的那个，避免依赖某一种实现的细节。
+        selectFolder: true
+        onAccepted: {
+            const picked = fileUrl.toString() !== "" ? fileUrl : folder
+            player.setScreenshotDirectory(player.localPathFromUrl(picked))
+        }
     }
 }

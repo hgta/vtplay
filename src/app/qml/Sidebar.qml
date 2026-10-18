@@ -1,6 +1,6 @@
-import QtQuick
-import QtQuick.Layouts
-import QtQuick.Controls
+import QtQuick 2.15
+import QtQuick.Layouts 1.15
+import QtQuick.Controls 2.15
 import VTPlay 1.0
 
 /// 侧栏：播放列表（本次会话队列）+ 最近打开（历史记录）。

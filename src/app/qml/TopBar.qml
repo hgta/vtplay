@@ -1,5 +1,5 @@
-import QtQuick
-import QtQuick.Layouts
+import QtQuick 2.15
+import QtQuick.Layouts 1.15
 import VTPlay 1.0
 
 /// 顶栏：侧栏开关 + 品牌标识 + 当前文件名 + 常用操作。
@@ -49,7 +49,7 @@ Rectangle {
                 Image {
                     id: brandLogo
                     anchors.fill: parent
-                    source: "qrc:/qt/qml/VTPlay/brand/logo.png"
+                    source: "qrc:/VTPlay/brand/logo.png"
                     fillMode: Image.PreserveAspectFit
                     smooth: true
                 }

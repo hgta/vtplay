@@ -14,8 +14,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
-#include <QMediaDevices>
-#include <QAudioDevice>
+#include <QAudioDeviceInfo>
 #include <QProcess>
 #include <QScreen>
 #include <QSettings>
@@ -629,9 +628,11 @@ void PlayerController::clearTranscoderVersionCache() {
 }
 
 QString PlayerController::audioDeviceName() const {
-    const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
+    // Qt5：QMediaDevices::defaultAudioOutput() → QAudioDeviceInfo::defaultOutputDevice()，
+    // 且设备描述叫 deviceName()（Qt6 为 description()）
+    const QAudioDeviceInfo dev = QAudioDeviceInfo::defaultOutputDevice();
     if (dev.isNull()) return QStringLiteral("未找到音频输出设备");
-    return dev.description();
+    return dev.deviceName();
 }
 
 void PlayerController::setAlwaysOnTop(bool v) {

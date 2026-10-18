@@ -303,7 +303,7 @@ TranscoderInfo Exporter::probeTranscoder(const QString& configuredPath) {
         }
         if (probe.exitStatus() != QProcess::NormalExit || probe.exitCode() != 0) continue;
 
-        const QString out = QString::fromLocal8Bit(probe.readAllStandardOutput());
+        const QString out = QString::fromUtf8(probe.readAllStandardOutput());
         info.available = true;
         info.path      = fi.absoluteFilePath();
         info.version   = out.section(QLatin1Char('\n'), 0, 0).trimmed();
@@ -370,7 +370,9 @@ void Exporter::start(const ExportPreset& preset, const QString& input, const QSt
         proc_ = std::make_unique<QProcess>(this);
         connect(proc_.get(), &QProcess::readyReadStandardOutput, this, &Exporter::onStdout);
         connect(proc_.get(), &QProcess::readyReadStandardError,  this, &Exporter::onStderr);
-        connect(proc_.get(), &QProcess::finished,
+        // Qt5 的 QProcess::finished 同时有 (int) 与 (int, ExitStatus) 两个重载，
+        // 直接取地址会有歧义，必须用 QOverload 选定（Qt6 已删掉旧重载，故原来不用写）。
+        connect(proc_.get(), QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
                 this, [this](int code, QProcess::ExitStatus) { onFinished(code); });
     }
 
@@ -401,7 +403,7 @@ void Exporter::discardPartialOutput() {
 }
 
 void Exporter::onStdout() {
-    outBuf_ += QString::fromLocal8Bit(proc_->readAllStandardOutput());
+    outBuf_ += QString::fromUtf8(proc_->readAllStandardOutput());
 
     int idx;
     while ((idx = outBuf_.indexOf(QLatin1Char('\n'))) >= 0) {
@@ -434,7 +436,10 @@ void Exporter::onStdout() {
 }
 
 void Exporter::onStderr() {
-    const QString chunk = QString::fromLocal8Bit(proc_->readAllStandardError());
+    // 必须按 UTF-8 解码：ffmpeg 的 stdout/stderr 都是 UTF-8，而 fromLocal8Bit 在中文
+    // Windows 上是 GBK，会把报错解成乱码——恰恰毁掉"出错时能看懂原因"这件事。
+    // （main.cpp 解析 argv 仍用 fromLocal8Bit：那是 Windows 的 ANSI 参数，不是 UTF-8。）
+    const QString chunk = QString::fromUtf8(proc_->readAllStandardError());
     const auto lines = chunk.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     for (const QString& l : lines) {
         const QString t = l.trimmed();

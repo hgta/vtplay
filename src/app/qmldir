@@ -1,0 +1,27 @@
+module VTPlay
+
+# Theme 是 `pragma Singleton`。Qt6 由 qt_add_qml_module 读 QT_QML_SINGLETON_TYPE 自动生成；
+# Qt5 必须在这里显式写 singleton 关键字（5.15 起支持），否则 Theme 不会被注册，
+# 所有 QML 里的 Theme.xxx 都会报 "Theme is not defined"。
+singleton Theme 1.0 Theme.qml
+
+# 其余类型逐个列出：本目录存在 qmldir 时，不再依赖"同目录隐式可用"的规则，
+# 显式列出的好处是漏加文件会立刻报错，而不是在某些加载顺序下悄悄生效。
+Main 1.0 Main.qml
+VideoSurface 1.0 VideoSurface.qml
+ControlsBar 1.0 ControlsBar.qml
+InfoBar 1.0 InfoBar.qml
+TopBar 1.0 TopBar.qml
+Sidebar 1.0 Sidebar.qml
+AppMenu 1.0 AppMenu.qml
+FlatButton 1.0 FlatButton.qml
+Toast 1.0 Toast.qml
+VolumeSlider 1.0 VolumeSlider.qml
+SpeedMenu 1.0 SpeedMenu.qml
+SettingsDialog 1.0 SettingsDialog.qml
+DialogHeader 1.0 DialogHeader.qml
+ExportDialog 1.0 ExportDialog.qml
+ShortcutsDialog 1.0 ShortcutsDialog.qml
+AboutDialog 1.0 AboutDialog.qml
+DiagnosisSummary 1.0 DiagnosisSummary.qml
+RestoreOptions 1.0 RestoreOptions.qml

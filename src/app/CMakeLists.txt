@@ -39,48 +39,23 @@ target_compile_definitions(vtplay PRIVATE VTPLAY_VERSION="${PROJECT_VERSION}")
 
 target_link_libraries(vtplay PRIVATE
     vtcore
-    Qt6::Core
-    Qt6::Gui
-    Qt6::Quick
-    Qt6::QuickControls2
-    Qt6::OpenGL
-    Qt6::Multimedia
+    Qt5::Core
+    Qt5::Gui
+    Qt5::Quick
+    Qt5::QuickControls2
+    Qt5::Multimedia
 )
 
-# Theme 是 QML 单例（pragma Singleton），需要显式标记才能写进 qmldir
-set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
-
-# 品牌标识（顶栏/关于页）：用别名固定资源路径，QML 侧引用
-# qrc:/qt/qml/VTPlay/brand/logo.png —— 比依赖相对路径推导更稳
-set_source_files_properties(${VTPLAY_LOGO_PATH} PROPERTIES QT_RESOURCE_ALIAS brand/logo.png)
-
-qt_add_qml_module(vtplay
-    URI VTPlay
-    VERSION 1.0
-    QML_FILES
-        qml/Main.qml
-        qml/VideoSurface.qml
-        qml/ControlsBar.qml
-        qml/InfoBar.qml
-        qml/TopBar.qml
-        qml/Sidebar.qml
-        qml/AppMenu.qml
-        qml/FlatButton.qml
-        qml/Toast.qml
-        qml/VolumeSlider.qml
-        qml/SpeedMenu.qml
-        qml/SettingsDialog.qml
-        qml/DialogHeader.qml
-        qml/ExportDialog.qml
-        qml/ShortcutsDialog.qml
-        qml/AboutDialog.qml
-        qml/DiagnosisSummary.qml
-        qml/RestoreOptions.qml
-        qml/Theme.qml
-    RESOURCES
-        ${VTPLAY_LOGO_PATH}
-)
-# Qt >= 6.8: qt_add_qml_module 自动扫描 QML_NAMED_ELEMENT 完成类型注册
+# ---- QML 资源（Qt5：qrc + 手写 qmldir）----
+# Qt5 没有 qt_add_qml_module（那是 Qt6 的模块系统）。这里改用显式 qrc，并把手写的
+# qmldir 一并打进同一前缀，效果对齐 Qt6 的模块布局：
+#   · 模块根固定为 qrc:/VTPlay，于是 QML 里的 `import VTPlay 1.0` 语义不变
+#   · Theme 是 `pragma Singleton`，必须在 qmldir 里写 `singleton Theme 1.0 Theme.qml`
+#     才会被注册（Qt6 靠 QT_QML_SINGLETON_TYPE 属性，Qt5 没有这套）
+#   · 其余 .qml 在 qmldir 里逐个列出：目录里存在 qmldir 时，不再依赖隐式规则去猜
+# 品牌 logo 的别名相应变为 qrc:/VTPlay/brand/logo.png（QML 侧同步改过）。
+# AUTORCC 已在顶层打开，因此把 .qrc 加进目标即可。
+target_sources(vtplay PRIVATE qml.qrc)
 
 # 子系统：Debug 保留控制台便于查看诊断输出；Release 用窗口子系统（双击不弹黑窗）。
 # 发布构建下仍可用 VTPLAY_CONSOLE=1 附加控制台（见 main.cpp）。

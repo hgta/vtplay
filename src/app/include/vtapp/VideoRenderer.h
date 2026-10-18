@@ -13,7 +13,9 @@ namespace vtapp {
 /// 并显示为 QImage 源。等同于 MVP 阶段的"输出层"；未来可替换为原生 QSG 纹理。
 class VideoRenderer : public QQuickItem {
     Q_OBJECT
-    QML_NAMED_ELEMENT(VideoRenderer)
+    // 注：Qt6 用 QML_NAMED_ELEMENT + qt_add_qml_module 自动注册类型；Qt5 没有这套宏，
+    // 改为在 main.cpp 里显式 qmlRegisterType<VideoRenderer>("VTPlayCore", 1, 0, "VideoRenderer")。
+    // QML 侧的 `import VTPlayCore 1.0` 因此保持不变。
 public:
     explicit VideoRenderer(QQuickItem* parent = nullptr);
     void attach(vtcore::MediaPipeline* pipeline);

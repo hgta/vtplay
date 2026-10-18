@@ -1,5 +1,5 @@
-import QtQuick
-import QtQuick.Layouts
+import QtQuick 2.15
+import QtQuick.Layouts 1.15
 import VTPlay 1.0
 
 /// 媒体信息条：当前媒体的技术规格（分辨率/帧率/码率/体积 + 音频参数）。

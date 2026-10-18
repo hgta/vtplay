@@ -1,4 +1,4 @@
-import QtQuick
+import QtQuick 2.15
 import VTPlay 1.0
 
 /// 对话框标题条。

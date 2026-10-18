@@ -98,6 +98,14 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
+    // ---- 渲染后端：默认软件渲染（必须在 QGuiApplication 之前设置）----
+    // 目标机（Win8.1 老 Intel 核显）的桌面 OpenGL 版本可能低于 Qt Quick 所需，而本构建
+    // 不带 ANGLE。软件后端在 SD/720p 内容上由 CPU 合成不构成瓶颈，优先保证"能起能放"。
+    // 环境变量优先：用户可用 QT_QUICK_BACKEND=gl 强制走硬件后端做对照。
+    if (qEnvironmentVariableIsEmpty("QT_QUICK_BACKEND")) {
+        qputenv("QT_QUICK_BACKEND", "software");
+    }
+
     QGuiApplication app(argc, argv);
     app.setOrganizationName("VTPlay");
     app.setApplicationName("VTPlay");
@@ -121,7 +129,9 @@ int main(int argc, char* argv[]) {
         qVersion());
     std::fflush(stderr);
 
-    QQuickStyle::setStyle("Basic");
+    // Qt5 没有 Qt6 的 Basic 风格（Basic 是 Qt6 引入的"无装饰"基座），对应的是 Default。
+    // 界面大量覆写 background/color/radius，因此差别主要在未覆写控件的默认外观。
+    QQuickStyle::setStyle("Default");
 
     qmlRegisterUncreatableType<vtapp::PlayerController>("VTPlay", 1, 0, "PlayerController",
         "PlayerController is owned by C++");
@@ -136,7 +146,9 @@ int main(int argc, char* argv[]) {
     engine.rootContext()->setContextProperty("player", &controller);
     engine.rootContext()->setContextProperty("appWin", engine.rootObjects().value(0));
 
-    engine.loadFromModule("VTPlay", "Main");
+    // Qt5 没有 loadFromModule（Qt6 的模块加载入口），改为直接加载 qrc 里的 Main.qml。
+    // 路径与 qml.qrc 的前缀 /VTPlay 对应。
+    engine.load(QUrl(QStringLiteral("qrc:/VTPlay/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
         // 明确报出来：否则窗口子系统下表现为「双击没反应」，无从下手
         qCritical("QML 根对象创建失败，界面无法显示（详见上方 QML 错误）");

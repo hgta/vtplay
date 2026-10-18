@@ -5,10 +5,9 @@
 #include "Clock.h"
 #include "PlayerState.h"
 
-#include <QAudioDevice>
-#include <QAudioSink>
+#include <QAudioOutput>
+#include <QAudioDeviceInfo>
 #include <QAudioFormat>
-#include <QMediaDevices>
 #include <QTimer>
 #include <QDebug>
 #include <algorithm>
@@ -16,6 +15,16 @@
 #include <cstring>
 
 namespace vtapp {
+
+namespace {
+// Qt5 用 (codec, sampleSize, sampleType) 描述 PCM 采样格式；Qt6 改成 setSampleFormat(Int16)。
+// 同一个"S16"在两边写法完全不同，集中成一个小函数，避免两处各写一遍。
+void configurePcmS16(QAudioFormat& fmt) {
+    fmt.setCodec(QStringLiteral("audio/pcm"));
+    fmt.setSampleSize(16);
+    fmt.setSampleType(QAudioFormat::SignedInt);
+}
+} // namespace
 
 qint64 AudioOutput::PcmDevice::readData(char* data, qint64 maxlen) {
     // 拉模式契约：必须尽量填满缓冲并返回非零长度。
@@ -91,12 +100,12 @@ AudioOutput::AudioOutput(QObject* parent) : QObject(parent) {
     // 默认请求 S16 / 立体声 / 48kHz；若默认设备不支持（例如只支持 44.1kHz
     // 的设备），回退到设备首选采样率/声道，并让解码器按该格式重采样。
     // 否则 QAudioSink 可能拒绝启动（无声）。
-    const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
+    const QAudioDeviceInfo dev = QAudioDeviceInfo::defaultOutputDevice();
 
     QAudioFormat fmt;
     fmt.setSampleRate(48000);
     fmt.setChannelCount(2);
-    fmt.setSampleFormat(QAudioFormat::Int16);
+    configurePcmS16(fmt);
 
     if (dev.isNull()) {
         std::fprintf(stderr, "[audio] 警告：系统没有可用的音频输出设备\n");
@@ -110,28 +119,29 @@ AudioOutput::AudioOutput(QObject* parent) : QObject(parent) {
     }
     rate_     = fmt.sampleRate()   > 0 ? fmt.sampleRate()   : 48000;
     channels_ = fmt.channelCount() > 0 ? fmt.channelCount() : 2;
-    fmt.setSampleFormat(QAudioFormat::Int16);   // 解码链路统一输出 S16
+    configurePcmS16(fmt);   // 解码链路统一输出 S16（协商后重新钉住采样格式）
 
     if (!dev.isNull()) {
         std::fprintf(stderr, "[audio] device='%s' rate=%d ch=%d supported=%d\n",
-                     dev.description().toUtf8().constData(),
+                     dev.deviceName().toUtf8().constData(),
                      rate_, channels_, (int)dev.isFormatSupported(fmt));
         std::fflush(stderr);
     }
 
     device_.reset(new PcmDevice(this));
 
-    auto* sink = new QAudioSink(fmt, this);
+    auto* sink = new QAudioOutput(fmt, this);
     sink_.reset(sink);
     sink_->setVolume(static_cast<qreal>(volume_));
 
     // 状态变化日志：便于定位"无声"（IdleState=3 / StoppedState=2 表示设备未在播放）
-    connect(sink, &QAudioSink::stateChanged, this, [](QAudio::State s) {
+    connect(sink, &QAudioOutput::stateChanged, this, [](QAudio::State s) {
         std::fprintf(stderr, "[audio] state -> %d\n", static_cast<int>(s));
         std::fflush(stderr);
     });
 
-    // 拉模式：QAudioSink 从 PcmDevice 拉取 PCM
+    // 拉模式：QAudioOutput 从 PcmDevice 拉取 PCM（必须保持拉模式——主时钟依赖
+    // readData 里"已送出字节数"的回馈，改成 push 等于重写整套同步）
     sink_->start(device_.data());
     std::fprintf(stderr, "[audio] sink started: state=%d error=%d\n",
                  static_cast<int>(sink_->state()), static_cast<int>(sink_->error()));

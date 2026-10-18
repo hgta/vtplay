@@ -1,8 +1,11 @@
-import QtQuick
-import QtQuick.Controls.Basic
-import QtQuick.Window
-import QtQuick.Layouts
-import QtQuick.Dialogs
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+import QtQuick.Window 2.15
+import QtQuick.Layouts 1.15
+// 注意：Qt5 的 QtQuick.Dialogs 1.3 里**也**有一个 `Dialog` 类型，且后导入的会遮蔽
+// QtQuick.Controls 的 `Dialog`（Qt6 的 Dialogs 已移除该类型，故原来无冲突）。
+// 这里用别名导入，彻底避免歧义，而不是依赖导入顺序。
+import QtQuick.Dialogs 1.3 as NativeDialogs
 import VTPlay 1.0
 
 ApplicationWindow {
@@ -21,12 +24,10 @@ ApplicationWindow {
     title: player.windowTitle
     color: Theme.bg
 
-    onFlagsChanged: {
-        // 运行时改 flags（如切换置顶）会重建原生窗口，Qt 会先把窗口隐藏，
-        // 这里恢复可见性——但必须排除「正在退出」的情形，否则窗口关不掉：
-        // 关闭把 visible 置 false，紧随其后的 flags 变化又会把它显示回来。
-        if (!visible && !win.shuttingDown) visible = true
-    }
+    // 注：运行时改 flags（如切换置顶）会重建原生窗口，且 Qt 可能先把窗口隐藏，需要恢复可见性。
+    // Qt6 用 flagsChanged 信号；Qt5 的 QML Window 没有该信号，改由 visibility 兜住。
+    // 具体处理放在下面 syncActiveState 旁的 onVisibilityChanged 里——QML 不允许对同一属性
+    // 写两个处理器（会报 "Property value set multiple times"）。
 
     /// 已进入关闭流程：用于抑制上面的可见性恢复
     property bool shuttingDown: false
@@ -50,7 +51,13 @@ ApplicationWindow {
         player.setWindowActive(win.active && win.visibility !== Window.Minimized)
     }
     onActiveChanged: syncActiveState()
-    onVisibilityChanged: syncActiveState()
+    onVisibilityChanged: {
+        syncActiveState()
+        // 改 flags 重建原生窗口时窗口会被隐藏 → 恢复可见性（见上方 onFlagsChanged 的说明）。
+        // 排除关闭流程，否则窗口关不掉；最小化时 visibility 是 Window.Minimized 而非 Hidden，
+        // 因此不会误把最小化窗口弹回来。
+        if (visibility === Window.Hidden && !win.shuttingDown) visible = true
+    }
     /// 有弹窗/菜单打开时禁用播放类快捷键：否则在导出对话框里输入路径会触发播放暂停
     readonly property bool modalOpen: appMenu.visible || exportDialog.visible
                                        || shortcutsDialog.visible || aboutDialog.visible
@@ -212,7 +219,7 @@ ApplicationWindow {
     }
 
     // ===== 弹窗 =====
-    FileDialog {
+    NativeDialogs.FileDialog {
         id: fileDialog
         title: "选择媒体文件"
         nameFilters: [
@@ -220,20 +227,22 @@ ApplicationWindow {
             "音频 (*.mp3 *.flac *.wav *.aac *.ogg)",
             "所有文件 (*)"
         ]
-        onAccepted: player.openUrl(selectedFile)
+        // Qt5（QtQuick.Dialogs 1.3）的结果属性是 fileUrl（URL），Qt6 是 selectedFile（字符串）
+        onAccepted: player.openUrl(fileUrl)
     }
 
     // 多选：一次加入播放列表；只选一个时等价于打开它
-    FileDialog {
+    NativeDialogs.FileDialog {
         id: addFilesDialog
         title: "添加到播放列表"
-        fileMode: FileDialog.OpenFiles
+        // Qt5：多选用 selectMultiple，结果在 fileUrls（Qt6 是 fileMode: OpenFiles + selectedFiles）
+        selectMultiple: true
         nameFilters: [
             "视频 (*.mp4 *.mkv *.mov *.avi *.webm)",
             "音频 (*.mp3 *.flac *.wav *.aac *.ogg)",
             "所有文件 (*)"
         ]
-        onAccepted: player.addToPlaylist(selectedFiles)
+        onAccepted: player.addToPlaylist(fileUrls)
     }
 
     AppMenu {

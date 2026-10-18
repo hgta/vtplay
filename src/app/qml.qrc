@@ -1,0 +1,38 @@
+<!--
+  Qt5 的 QML 资源入口（替代 Qt6 的 qt_add_qml_module）。
+
+  为什么是手写 qrc 而不是继续用模块系统：qt_add_qml_module 是 Qt6 才有的，
+  它会自动生成 qmldir 并处理单例/别名。Qt5 下这些都要显式写出来，见同目录的 qmldir。
+
+  资源前缀固定为 /VTPlay，使 QML 里的 `import VTPlay 1.0` 与模块根保持一致。
+  由此唯一变化的对外路径是 logo：qrc:/qt/qml/VTPlay/brand/logo.png → qrc:/VTPlay/brand/logo.png
+-->
+<RCC>
+    <qresource prefix="/VTPlay">
+        <!-- 手写 qmldir：模块声明 + 单例 Theme + 各类型 -->
+        <file alias="qmldir">qmldir</file>
+
+        <file alias="Main.qml">qml/Main.qml</file>
+        <file alias="VideoSurface.qml">qml/VideoSurface.qml</file>
+        <file alias="ControlsBar.qml">qml/ControlsBar.qml</file>
+        <file alias="InfoBar.qml">qml/InfoBar.qml</file>
+        <file alias="TopBar.qml">qml/TopBar.qml</file>
+        <file alias="Sidebar.qml">qml/Sidebar.qml</file>
+        <file alias="AppMenu.qml">qml/AppMenu.qml</file>
+        <file alias="FlatButton.qml">qml/FlatButton.qml</file>
+        <file alias="Toast.qml">qml/Toast.qml</file>
+        <file alias="VolumeSlider.qml">qml/VolumeSlider.qml</file>
+        <file alias="SpeedMenu.qml">qml/SpeedMenu.qml</file>
+        <file alias="SettingsDialog.qml">qml/SettingsDialog.qml</file>
+        <file alias="DialogHeader.qml">qml/DialogHeader.qml</file>
+        <file alias="ExportDialog.qml">qml/ExportDialog.qml</file>
+        <file alias="ShortcutsDialog.qml">qml/ShortcutsDialog.qml</file>
+        <file alias="AboutDialog.qml">qml/AboutDialog.qml</file>
+        <file alias="DiagnosisSummary.qml">qml/DiagnosisSummary.qml</file>
+        <file alias="RestoreOptions.qml">qml/RestoreOptions.qml</file>
+        <file alias="Theme.qml">qml/Theme.qml</file>
+
+        <!-- 品牌标识（顶栏/关于页）。Qt6 侧靠 QT_RESOURCE_ALIAS，Qt5 直接写 alias。 -->
+        <file alias="brand/logo.png">../../resources/icons/vtplay_128.png</file>
+    </qresource>
+</RCC>

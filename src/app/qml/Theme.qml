@@ -1,5 +1,5 @@
 pragma Singleton
-import QtQuick
+import QtQuick 2.15
 
 QtObject {
     // 视觉 token 单例 —— UI 集中引用，避免硬编码
